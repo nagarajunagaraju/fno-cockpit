@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>F&O Cockpit · Signals</title>
+<style>
+:root{--bg:#0f1115;--card:#171a21;--line:#262b36;--tx:#e6e8ec;--mut:#8b93a3;--up:#22c55e;--dn:#ef4444;--warn:#f59e0b;--acc:#60a5fa}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+header{display:flex;gap:12px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:2;flex-wrap:wrap}
+header b{font-size:16px}a{color:var(--acc)}.pill{padding:2px 8px;border-radius:999px;font-size:12px;border:1px solid var(--line)}
+.up{color:var(--up)}.dn{color:var(--dn)}.mut{color:var(--mut)}.warn{color:var(--warn)}
+main{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:12px;padding:12px}
+section{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;min-width:0}
+h2{font-size:14px;margin:0 0 8px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
+table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:4px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{color:var(--mut);font-weight:500}.r{text-align:right}.wide{grid-column:1/-1}
+.sig{border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:10px}.sig.BULL{border-color:#166534}.sig.BEAR{border-color:#7f1d1d}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:2px 14px}details summary{cursor:pointer;color:var(--acc)}
+ul{margin:4px 0 4px 18px;padding:0}button{background:#1f2430;color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:6px 10px;cursor:pointer}
+.kv{display:flex;justify-content:space-between;border-bottom:1px dashed var(--line);padding:2px 0}
+</style>
+</head>
+<body>
+<header>
+  <b>F&amp;O Cockpit · Signals</b><span id="mode" class="pill">…</span><span id="mkt" class="mut"></span>
+  <span style="flex:1"></span><a href="/">Old dashboard</a><a href="/login">Login with Kite</a><span id="upd" class="mut"></span>
+</header>
+<main>
+  <section><h2>1 · Live market status</h2><div id="market"></div></section>
+  <section><h2>12 · Risk management (paper)</h2><div id="risk"></div></section>
+  <section><h2>13 · Data / API health</h2><div id="health"></div></section>
+  <section class="wide"><h2>2 · Live scanner</h2><div id="scanner"></div></section>
+  <section><h2>3 · Bullish opportunities</h2><div id="bull"></div></section>
+  <section><h2>4 · Bearish opportunities</h2><div id="bear"></div></section>
+  <section class="wide"><h2>5–8 · Triggered signals (contract · explanation · entry / SL / targets)</h2><div id="triggered"></div></section>
+  <section class="wide"><h2>9 · Paper trading positions</h2><div id="paper"></div></section>
+  <section class="wide"><h2>10 · Backtesting results</h2><div><button id="btRun">Run backtest (30 days)</button> <span id="btState" class="mut"></span></div><div id="bt"></div></section>
+  <section class="wide"><h2>11 · Signal history</h2><div id="history"></div></section>
+</main>
+<script>
+const TOKEN = (() => { try { const t = new URLSearchParams(location.search).get("token"); if (t) { localStorage.setItem("cockpit_token", t); history.replaceState(null, "", location.pathname); } return localStorage.getItem("cockpit_token") || ""; } catch (e) { return ""; } })();
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "—").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const n = (x, d = 2) => x == null ? "—" : Number(x).toLocaleString("en-IN", {maximumFractionDigits: d});
+const rs = x => x == null ? "—" : "₹" + n(x, 0);
+const cl = x => x > 0 ? "up" : x < 0 ? "dn" : "";
+async function api(p, o = {}) { const r = await fetch(p, {headers: {"X-App-Token": TOKEN, "Content-Type": "application/json"}, ...o}); const b = await r.json().catch(() => ({})); if (!r.ok) throw new Error(b.detail || r.statusText); return b; }
+
+function oppTable(xs) {
+  if (!xs.length) return `<p class="mut">No setup right now — NO TRADE is a valid answer.</p>`;
+  return `<table><tr><th>Stock</th><th>Status</th><th class="r">Score</th><th class="r">Chg%</th><th class="r">RVOL</th><th>Build-up</th><th>Note</th></tr>${xs.map(x => `<tr><td><b>${esc(x.symbol)}</b><br><span class="mut">${esc(x.sector)}</span></td><td>${esc(x.status)}</td><td class="r">${n(x.score,1)}</td><td class="r ${cl(x.metrics.chg_pct)}">${n(x.metrics.chg_pct)}</td><td class="r">${n(x.metrics.rvol)}</td><td>${esc(x.metrics.buildup)}</td><td class="mut">${esc(x.wait_reason || (x.missing||[])[0] || "")}</td></tr>`).join("")}</table>`;
+}
+
+function sigCard(s) {
+  const p = s.plan, e = s.explanation || {}, sel = s.selection || {};
+  const li = a => (a || []).map(x => `<li>${esc(x)}</li>`).join("");
+  return `<div class="sig ${s.bias}">
+   <div><b>#${s.id} ${esc(s.symbol)}</b> · <span class="${s.bias === "BULL" ? "up" : "dn"}">${p.direction} → BUY ${p.option_type}</span> · <span class="pill">${esc(s.status)}</span> · Score ${n(s.score,1)}/10 · ${esc(p.confidence)}</div>
+   <div class="mut">${esc(p.tradingsymbol)} · strike ${n(p.strike)} · expiry ${esc(p.expiry)} (${n(p.dte,1)}d) · signal ${esc(p.signal_time)} · data ${esc(p.data_time)}</div>
+   <div class="grid2" style="margin-top:6px">
+     <div class="kv"><span>Entry range</span><b>${n(p.entry_range[0])} – ${n(p.entry_range[1])}</b></div><div class="kv"><span>Stop-loss</span><b class="dn">${n(p.sl_premium)}</b></div>
+     <div class="kv"><span>Target 1</span><b class="up">${n(p.t1_premium)}</b></div><div class="kv"><span>Target 2</span><b class="up">${n(p.t2_premium)}</b></div>
+     <div class="kv"><span>R:R (T1 / T2)</span><b>${n(p.rr_t1)} / ${n(p.rr_t2)}</b></div><div class="kv"><span>Qty</span><b>${p.lots} lot(s) = ${p.qty}</b></div>
+     <div class="kv"><span>Max est. loss</span><b>${rs(p.max_loss)}</b></div><div class="kv"><span>Spot SL / T1 / T2</span><b>${n(p.spot_sl)} / ${n(p.spot_t1)} / ${n(p.spot_t2)}</b></div>
+     <div class="kv"><span>IV / Δ / Γ</span><b>${n(p.iv,1)}% / ${n(p.delta,2)} / ${n(p.gamma,4)}</b></div><div class="kv"><span>Θ / Vega / Spread</span><b>${n(p.theta)} / ${n(p.vega)} / ${n(p.spread_pct,1)}%</b></div>
+   </div>
+   <p><b>Entry trigger:</b> ${esc(p.entry_trigger)}</p>
+   ${s.fill_price ? `<p>Paper fill ${n(s.fill_price)} · last bid ${n(s.last_bid)} · net P&L <b class="${cl(s.net_pnl)}">${rs(s.net_pnl)}</b> ${esc(s.outcome || "")}</p>` : ""}
+   <details><summary>Why this trade (full reasoning)</summary>
+     <p>${esc(e.why_stock)}</p>
+     <b>Passed</b><ul>${li(e.passed)}</ul><b>Failed</b><ul>${li(e.failed) || "<li>none</li>"}</ul><b>Unavailable</b><ul>${li(e.unavailable) || "<li>none</li>"}</ul>
+     <p><b>Futures OI:</b> ${esc(e.futures_oi)}</p><p><b>Option chain:</b> ${esc(e.option_chain)}</p><p><b>Sector:</b> ${esc(e.sector)}</p>
+     <b>Why this strike</b><ul>${li(e.why_strike)}</ul><p><b>Why this entry:</b> ${esc(e.why_entry)}</p>
+     <p><b>Invalidation:</b> ${esc(e.invalidation)}</p><b>Main risks</b><ul>${li(e.risks)}</ul>
+     <b>Plan notes</b><ul>${li(p.plan_notes)}</ul>
+     <b>Strikes compared</b><table><tr><th>Strike</th><th>OK</th><th class="r">Score</th><th class="r">Δ</th><th class="r">Spread%</th><th>Reason</th></tr>${(sel.candidates||[]).map(c => `<tr><td>${n(c.strike)}</td><td>${c.eligible ? "✓" : "✗"}</td><td class="r">${n(c.score,1)}</td><td class="r">${n(c.delta,2)}</td><td class="r">${n(c.spread_pct,1)}</td><td class="mut">${esc((c.rejected||[])[0] || "")}</td></tr>`).join("")}</table>
+   </details></div>`;
+}
+
+async function refresh() {
+  try {
+    const [h, sc, rk, pp] = await Promise.all([api("/api/engine/health"), api("/api/engine/scanner"), api("/api/engine/risk"), api("/api/engine/paper")]);
+    $("#mode").textContent = (h.feed && h.feed.mode) + " · " + h.execution;
+    const m = sc.market || {}, pc = o => o && o.prev_close ? (o.ltp / o.prev_close - 1) * 100 : null;
+    $("#mkt").innerHTML = `NIFTY <span class="${cl(pc(m.nifty))}">${n(pc(m.nifty))}%</span> · BANKNIFTY <span class="${cl(pc(m.banknifty))}">${n(pc(m.banknifty))}%</span>`;
+    $("#upd").textContent = sc.updated || "";
+    $("#market").innerHTML = `<div class="kv"><span>NIFTY 50</span><b>${n(m.nifty && m.nifty.ltp)} (${n(pc(m.nifty))}%)</b></div><div class="kv"><span>BANK NIFTY</span><b>${n(m.banknifty && m.banknifty.ltp)} (${n(pc(m.banknifty))}%)</b></div><div class="kv"><span>Breadth (F&amp;O)</span><b>${m.breadth ? m.breadth.adv + " up / " + m.breadth.dec + " down" : "—"}</b></div><div class="kv"><span>Scanner</span><b>${esc(sc.status)}</b></div>`;
+    const st = rk.state, lim = rk.limits;
+    $("#risk").innerHTML = `<div class="kv"><span>Day P&amp;L</span><b class="${cl(st.day_pnl)}">${rs(st.day_pnl)}</b></div><div class="kv"><span>Daily loss limit</span><b>${rs(st.max_daily_loss)} ${st.locked ? '<span class="dn">LOCKED</span>' : ""}</b></div><div class="kv"><span>Open positions</span><b>${st.open_positions}/${st.max_open_positions}</b></div><div class="kv"><span>Exposure</span><b>${rs(st.exposure)} / ${rs(st.max_exposure)}</b></div><div class="kv"><span>Risk per trade</span><b>${lim.risk_per_trade_pct}% of ${rs(lim.capital)}</b></div><div class="kv"><span>Min score / min R:R</span><b>${lim.min_score} / ${lim.min_rr}</b></div>`;
+    const f = h.feed || {};
+    $("#health").innerHTML = `<div class="kv"><span>Feed</span><b>${esc(f.stage)}</b></div><div class="kv"><span>WebSocket</span><b>${esc(f.ticker)}</b></div><div class="kv"><span>Last tick age</span><b>${f.last_tick_age_s ?? "—"}s</b></div><div class="kv"><span>REST fallback</span><b>${f.rest_fallback ? '<span class="warn">ON</span>' : "off"}</b></div><div class="kv"><span>Universe / baselines</span><b>${f.universe ?? "—"} / ${f.baseline_loaded ?? "—"}</b></div><div class="kv"><span>Cycle</span><b>${h.scanner.cycle_ms ?? "—"} ms</b></div><div class="kv"><span>Kite login</span><b>${f.logged_in ? "yes" : '<span class="dn">login needed</span>'}</b></div>${(f.errors||[]).slice(-3).map(e => `<div class="mut">${esc(e)}</div>`).join("")}`;
+    const c = sc.counts || {};
+    $("#scanner").innerHTML = `<p>Universe <b>${sc.universe ?? "—"}</b> · evaluated ${sc.evaluated ?? "—"} · option-chain checked ${sc.option_checked ?? "—"} · TRIGGER ${c.TRIGGER ?? 0} · READY ${c.READY ?? 0} · WATCHING ${c.WATCHING ?? 0} · REJECTED ${c.REJECTED ?? 0} · NO SETUP ${c.NO_SETUP ?? 0}</p>` +
+      `<details><summary>Rejected setups (${(sc.rejected||[]).length})</summary><table>${(sc.rejected||[]).map(x => `<tr><td><b>${esc(x.symbol)}</b></td><td>${esc(x.direction)}</td><td class="mut">${esc(x.reject_reasons.join(" · "))}</td></tr>`).join("")}</table></details>` +
+      `<details><summary>Recent trigger decisions</summary><table>${(sc.trigger_log||[]).slice().reverse().map(x => `<tr><td>${esc(x.time.slice(11,16))}</td><td>${esc(x.symbol)} ${esc(x.direction)}</td><td class="mut">${esc(x.result)}</td></tr>`).join("")}</table></details>`;
+    $("#bull").innerHTML = oppTable(sc.bullish || []);
+    $("#bear").innerHTML = oppTable(sc.bearish || []);
+    const open = pp.open || [];
+    const full = await Promise.all(open.map(s => api("/api/engine/signals/" + s.id)));
+    $("#triggered").innerHTML = full.length ? full.map(sigCard).join("") : `<p class="mut">No active signals. Alerts fire only when every mandatory filter and the entry trigger pass.</p>`;
+    const rows = [...open, ...(pp.closed_today || [])];
+    const sa = pp.stats_all_time || {};
+    $("#paper").innerHTML = `<p>All-time paper: trades ${sa.trades || 0} · win ${sa.win_rate ?? "—"}% · PF ${sa.profit_factor ?? "—"} · expectancy ${rs(sa.expectancy)} · max DD ${rs(sa.max_drawdown)} · net ${rs(sa.net)}</p>` +
+      (rows.length ? `<table><tr><th>#</th><th>Contract</th><th>Status</th><th class="r">Fill</th><th class="r">Bid</th><th class="r">SL</th><th class="r">T1/T2</th><th class="r">Net P&amp;L</th></tr>${rows.map(s => `<tr><td>${s.id}</td><td>${esc(s.tradingsymbol)}</td><td>${esc(s.status)}</td><td class="r">${n(s.fill_price)}</td><td class="r">${n(s.last_bid)}</td><td class="r">${n(s.sl_premium)}</td><td class="r">${n(s.t1_premium)}/${n(s.t2_premium)}</td><td class="r ${cl(s.net_pnl)}">${rs(s.net_pnl)}</td></tr>`).join("")}</table>` : `<p class="mut">No paper positions today.</p>`);
+  } catch (e) { $("#upd").innerHTML = `<span class="dn">${esc(e.message)}</span>`; }
+}
+
+async function loadHistory() {
+  try {
+    const xs = await api("/api/engine/signals?limit=100");
+    $("#history").innerHTML = xs.length ? `<table><tr><th>#</th><th>Day</th><th>Stock</th><th>Contract</th><th>Status</th><th class="r">Score</th><th class="r">Net P&amp;L</th><th>Outcome</th></tr>${xs.map(s => `<tr><td>${s.id}</td><td>${s.day}</td><td>${esc(s.symbol)}</td><td>${esc(s.tradingsymbol)}</td><td>${esc(s.status)}</td><td class="r">${n(s.score,1)}</td><td class="r ${cl(s.net_pnl)}">${rs(s.net_pnl)}</td><td class="mut">${esc(s.outcome || "")}</td></tr>`).join("")}</table>` : `<p class="mut">No signals yet.</p>`;
+  } catch (e) {}
+}
+
+async function loadBt() {
+  try {
+    const b = await api("/api/engine/backtest");
+    $("#btState").textContent = b.running ? `running… ${JSON.stringify(b.progress)}` : (b.error ? "error: " + b.error : "");
+    const r = b.last; if (!r) { $("#bt").innerHTML = `<p class="mut">No backtest yet.</p>`; return; }
+    const s = r.stats || {};
+    const grp = g => Object.entries(g || {}).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="r">${v.trades}</td><td class="r">${v.win_rate}%</td><td class="r ${cl(v.pnl)}">${n(v.pnl)}R</td></tr>`).join("");
+    $("#bt").innerHTML = `<p><b>${esc(r.source)}</b> · ${r.tested_days.length} days · ${r.symbols} stocks · <b>${esc(r.sufficiency)}</b> · ${esc(r.created_at)}</p>
+      <p>Trades ${s.trades || 0} · win ${s.win_rate ?? "—"}% · avg win ${n(s.avg_profit)}R · avg loss ${n(s.avg_loss)}R · PF ${s.profit_factor ?? "—"} · expectancy ${n(s.expectancy)}R · max DD ${n(s.max_drawdown)}R · missed fills ${s.missed_fills ?? 0}</p>
+      <ul>${(r.notes || []).map(x => `<li class="mut">${esc(x)}</li>`).join("")}</ul>
+      <div class="grid2"><div><b>By time</b><table>${grp(s.by_hour)}</table><b>CE vs PE</b><table>${grp(s.by_side)}</table></div><div><b>By score</b><table>${grp(s.by_score)}</table><b>By stock</b><table>${grp(s.by_symbol)}</table></div></div>`;
+  } catch (e) {}
+}
+$("#btRun").onclick = async () => { try { await api("/api/engine/backtest", {method: "POST", body: JSON.stringify({days: 30})}); loadBt(); } catch (e) { $("#btState").textContent = e.message; } };
+refresh(); loadHistory(); loadBt();
+setInterval(refresh, 5000); setInterval(loadHistory, 30000); setInterval(loadBt, 10000);
+</script>
+</body>
+</html>

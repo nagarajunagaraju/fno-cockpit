@@ -1,0 +1,9 @@
+[Unit]
+Description=Restart F&O Cockpit every weekday at 08:30 IST
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 08:30:00 Asia/Kolkata
+Persistent=true
+
+[Install]
+WantedBy=timers.target

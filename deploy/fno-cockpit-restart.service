@@ -1,0 +1,6 @@
+[Unit]
+Description=Daily fresh start of F&O Cockpit before market (new Kite session, new day's baselines)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart fno-cockpit.service

@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Options Cockpit</title>
+<link rel="stylesheet" href="/static/style.css?v=20261120-0020">
+</head>
+<body>
+<header class="top">
+  <div class="brand">Options <span>Cockpit</span></div>
+  <span id="mode" class="badge">…</span>
+  <div id="nifty" class="nifty">NIFTY —</div>
+  <nav>
+    <button class="tab active" data-tab="cockpit">Cockpit</button>
+    <button class="tab" data-tab="journal">Journal</button>
+    <button class="tab" data-tab="rules">Rules</button>
+  </nav>
+  <div class="spacer"></div>
+  <a id="loginBtn" class="btn small hidden" href="/login">Login with Kite</a>
+  <span id="updated" class="muted">—</span>
+</header>
+
+<main>
+  <!-- ============ COCKPIT ============ -->
+  <section id="tab-cockpit" class="tabpane">
+    <div id="guard" class="guard">
+      <div class="guard-status"><div class="dot"></div><div><div class="label">Discipline Guard</div><div id="gStatus" class="gstatus">—</div></div></div>
+      <div class="guard-meters">
+        <div class="meter"><div class="mlabel">Trades today</div><div id="mTrades" class="mval">0 / 3</div><div class="bar"><i id="bTrades"></i></div></div>
+        <div class="meter"><div class="mlabel">Day P&amp;L vs loss limit</div><div id="mPnl" class="mval">₹0</div><div class="bar"><i id="bPnl"></i></div></div>
+        <div class="meter"><div class="mlabel">Open positions</div><div id="mOpen" class="mval">0 / 2</div><div class="bar"><i id="bOpen"></i></div></div>
+        <div class="meter"><div class="mlabel">Cooldown</div><div id="mCool" class="mval">—</div></div>
+      </div>
+      <ul id="gMsgs" class="gmsgs"></ul>
+    </div>
+
+    <div id="loading" class="card hidden"></div>
+
+    <div class="card" id="predictionCard" style="margin-bottom:16px">
+      <div class="card-head"><h2>Next-Session Research Outlook</h2><button class="btn small" id="loadPredictions">Refresh outlook</button></div>
+      <p class="muted small">Top 5 bullish / bearish research rankings. Score strength is NOT a calibrated probability. Confirm live price, option liquidity, IV and risk before any manual trade.</p>
+      <div class="grid" style="grid-template-columns:1fr 1fr;gap:12px">
+        <div><h3>Bullish candidates</h3><div id="topBull" class="muted">Press Refresh outlook.</div></div>
+        <div><h3>Bearish candidates</h3><div id="topBear" class="muted">Press Refresh outlook.</div></div>
+      </div>
+      <div id="predMeta" class="muted small"></div>
+      <div id="backtestMeta" class="muted small"></div>
+    </div>
+
+    <div class="grid">
+      <div class="leftcol">
+      <div class="card scanner">
+        <div class="card-head">
+          <h2>Stock Scanner (direction)</h2>
+          <div class="filters" id="filters">
+            <button data-f="all" class="chip active">All</button>
+            <button data-f="BULLISH" class="chip">Bullish</button>
+            <button data-f="BEARISH" class="chip">Bearish</button>
+            <button data-f="Long Buildup" class="chip">Long Buildup</button>
+            <button data-f="Short Buildup" class="chip">Short Buildup</button>
+            <button data-f="Short Covering" class="chip">Short Covering</button>
+            <button data-f="Long Unwinding" class="chip">Long Unwinding</button>
+          </div>
+          <input id="search" placeholder="Search symbol…">
+        </div>
+        <div class="table-wrap">
+          <table id="scan">
+            <thead><tr>
+              <th>Symbol</th><th class="r">LTP</th><th class="r">Chg %</th><th class="r">OI Chg %</th>
+              <th>Build-up</th><th class="r">RSI</th><th class="r">ATR</th><th>Score</th><th>Trade</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+    <div class="card hidden" id="chainCard">
+      <div class="card-head">
+        <h2>Option Chain · <span id="cSym">—</span></h2>
+        <div class="cstats" id="cStats"></div>
+      </div>
+      <div class="table-wrap chain-wrap">
+        <table id="chain">
+          <thead>
+            <tr class="grp"><th colspan="5" class="c">CALLS</th><th></th><th colspan="5" class="c">PUTS</th></tr>
+            <tr><th class="r">OI (lots)</th><th class="r">OI chg%</th><th class="r">IV</th><th class="r">Delta</th><th class="r">LTP</th>
+                <th class="c">Strike</th>
+                <th class="r">LTP</th><th class="r">Delta</th><th class="r">IV</th><th class="r">OI chg%</th><th class="r">OI (lots)</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="muted small">LTP click chesthe aa strike planner loki vastundi. ★ = suggested strike (delta ~0.55, liquid). Highest CE OI = resistance, highest PE OI = support.</p>
+    </div>
+
+      </div>
+      <div class="card planner" id="planner">
+        <h2>Option Buy Planner</h2>
+        <p class="muted" id="pEmpty">Scanner lo oka stock click cheyi. Option chain lo CE/PE premium click chesi strike marchachu.</p>
+        <div id="pBody" class="hidden">
+          <div class="p-sym"><span id="pSym">—</span><span id="pBias" class="bias">—</span><span id="pScore" class="muted"></span></div>
+          <div id="pOpt" class="p-opt">—</div>
+          <ul id="pReasons" class="reasons"></ul>
+          <div class="seg" id="pSide">
+            <button data-side="CE">BUY CE</button><button data-side="PE">BUY PE</button>
+          </div>
+          <div class="inputs">
+            <label>Strike<select id="pStrike"></select></label>
+            <label>Expiry<select id="pExpiry"></select></label>
+            <label>Entry premium<input id="pEntry" type="number" step="0.05"></label>
+            <label>SL premium<input id="pSl" type="number" step="0.05"></label>
+          </div>
+          <div class="nums">
+            <div><span>Target 1 (1.5R)</span><b id="pT1">—</b></div>
+            <div><span>Target 2 (2.5R)</span><b id="pT2">—</b></div>
+            <div><span>SL risk / premium</span><b id="pRiskPct">—</b></div>
+            <div><span>Delta · Theta/day</span><b id="pGreeks">—</b></div>
+            <div><span>IV vs stock HV20</span><b id="pIv">—</b></div>
+            <div><span>Days to expiry</span><b id="pDte">—</b></div>
+            <div class="hl"><span>Lots allowed</span><b id="pLots">—</b></div>
+            <div class="hl"><span>Risk ₹ (budget)</span><b id="pRisk">—</b></div>
+            <div><span>Premium outlay</span><b id="pOutlay">—</b></div>
+            <div><span>Reward @T1</span><b id="pRew">—</b></div>
+          </div>
+          <div class="ulevels" id="pU">—</div>
+          <div id="pWarn" class="warn hidden"></div>
+          <div class="checklist" id="pCheck">
+            <label><input type="checkbox" data-k="direction"> Stock score strong &amp; CE/PE matches bias</label>
+            <label><input type="checkbox" data-k="oi"> OI build-up + chain support/resistance confirm</label>
+            <label><input type="checkbox" data-k="option_ok"> Strike ATM/ITM, IV not crazy, expiry &gt; 5 days</label>
+            <label><input type="checkbox" data-k="sl_placed"> SL order placed in Kite with entry</label>
+            <label><input type="checkbox" data-k="size"> Lots = planner lots, not more</label>
+            <label><input type="checkbox" data-k="calm"> Not revenge / FOMO. I am calm.</label>
+          </div>
+          <textarea id="pReason" placeholder="Why this trade? (1 line)"></textarea>
+          <button id="pLog" class="btn primary">Log Trade</button>
+          <button id="pForce" class="linkbtn">I already took it against my rules: log honestly</button>
+          <div id="pMsg" class="pmsg"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Open Trades</h2><button id="notifBtn" class="btn small ghost">Enable alerts</button></div>
+      <div class="table-wrap">
+        <table id="open">
+          <thead><tr><th>Option</th><th class="r">Lots</th><th class="r">Entry</th><th class="r">SL</th><th class="r">T1 / T2</th><th class="r">LTP</th><th class="r">P&amp;L</th><th class="r">R now</th><th class="r">Stock / stock SL</th><th>Alert</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p id="openEmpty" class="muted">No open trades.</p>
+    </div>
+  </section>
+
+  <!-- ============ JOURNAL ============ -->
+  <section id="tab-journal" class="tabpane hidden">
+    <div class="stats" id="stats"></div>
+    <div class="grid2">
+      <div class="card"><h2>Rules followed vs broken</h2><div id="ruleCmp"></div></div>
+      <div class="card"><h2>Costliest mistakes</h2><div id="mistakes"></div></div>
+    </div>
+    <div class="card">
+      <h2>All trades</h2>
+      <div class="table-wrap">
+        <table id="jTable"><thead><tr><th>Opened</th><th>Option</th><th>Side</th><th class="r">Entry</th><th class="r">Exit</th><th class="r">P&amp;L</th><th class="r">R</th><th>Rules</th><th>Mistakes</th><th>Reason</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ RULES ============ -->
+  <section id="tab-rules" class="tabpane hidden">
+    <div class="card rules">
+      <h2>My Trading Rules</h2>
+      <p class="muted">Market open ayyaka ivi marchaku. Weekend lo review chesi update cheyi.</p>
+      <form id="rulesForm"></form>
+      <button id="saveRules" class="btn primary">Save rules</button>
+      <span id="rulesMsg" class="muted"></span>
+    </div>
+  </section>
+</main>
+
+<!-- close modal -->
+<div id="modal" class="modal hidden">
+  <div class="modal-box">
+    <h2 id="mTitle">Close trade</h2>
+    <label>Exit price<input id="mExit" type="number" step="0.05"></label>
+    <div class="muted">Emaina mistakes jarigaya? Honest ga tick cheyi:</div>
+    <div id="mTags" class="tags"></div>
+    <textarea id="mNotes" placeholder="Lesson from this trade"></textarea>
+    <div class="modal-actions"><button id="mCancel" class="btn ghost">Cancel</button><button id="mSave" class="btn primary">Close trade</button></div>
+  </div>
+</div>
+
+<script src="/static/app.js?v=20261120-0020"></script>
+</body>
+</html>

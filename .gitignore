@@ -1,0 +1,12 @@
+config.json
+.kite_token.json
+cockpit.db
+cache/
+data/
+.venv/
+__pycache__/
+android/keystore/
+android/local.properties
+android/.gradle/
+android/build/
+android/app/build/

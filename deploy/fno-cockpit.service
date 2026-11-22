@@ -1,0 +1,20 @@
+[Unit]
+Description=F&O Cockpit signal engine (FastAPI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=cockpit
+Group=cockpit
+WorkingDirectory=/opt/fno-cockpit
+Environment=TZ=Asia/Kolkata
+Environment=PYTHONUNBUFFERED=1
+# ONE worker only: the scanner must run in exactly one process (a file lock also enforces this).
+ExecStart=/opt/fno-cockpit/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
