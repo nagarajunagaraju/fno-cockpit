@@ -14,9 +14,9 @@ from .backtest import run_backtest
 from .config import DEFAULTS, IST
 from .scanner import get_cfg, save_cfg
 
-VERSION = "3.0.0"
+VERSION = "3.1.0"
 router = APIRouter(prefix="/api/engine")
-CTX: dict = {"scanner": None, "feed": None, "started": time.time(), "singleton": None}
+CTX: dict = {"scanner": None, "feed": None, "eod": None, "started": time.time(), "singleton": None}
 BT: dict = {"running": False, "progress": {}, "error": None}
 
 
@@ -147,8 +147,16 @@ def _bt_job(p: BacktestIn):
             src = feed.backtest_source(p.days, BT["progress"])
             if not src["symbols"]:
                 raise RuntimeError("no historical data downloaded: " + "; ".join(src["notes"][:3]))
+            notes = list(src["notes"])
+            moods = None
+            if cfg.get("fii_gate"):
+                from .eod import mood_history
+                from .sectors import INDEX_NIFTY
+                days_all = sorted((src["indices"].get(INDEX_NIFTY) or {}).get("minute", {}))
+                moods, n2 = mood_history(days_all, BT["progress"])
+                notes += n2
             res = run_pb(src["symbols"], src["loader"], src["indices"], cfg, days=p.days, cost_pct=p.cost_pct,
-                         progress=BT["progress"], source=src["source"], notes=src["notes"])
+                         progress=BT["progress"], source=src["source"], notes=notes, fii_moods=moods)
             res["created_at"] = dt.datetime.now(IST).isoformat(timespec="seconds")
             store.x("INSERT INTO backtests(created_at, params, result) VALUES(?,?,?)",
                     (res["created_at"], p.model_dump_json(), json.dumps(res)))
@@ -189,3 +197,24 @@ def backtest_get():
     if last:
         out["last"] = json.loads(last[0]["result"])
     return out
+
+
+# ------------------------------------------------------------ v3.1 evening watchlist
+@router.get("/watchlist")
+def watchlist_get():
+    rep = store.kv_get("eod_report")
+    job = CTX.get("eod")
+    return {"report": rep, "job": dict(job.state) if job else None,
+            "today": dt.datetime.now(IST).date().isoformat()}
+
+
+@router.post("/watchlist/run")
+def watchlist_run(force_without_fii: bool = False):
+    job = CTX.get("eod")
+    if job is None:
+        raise HTTPException(503, "Watchlist job not running (demo mode or second process)")
+    try:
+        rep = job.run(force_without_fii=force_without_fii)
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+    return {"ok": True, "for_date": rep["for_date"], "picks": len(rep["picks"])}

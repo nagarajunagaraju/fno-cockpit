@@ -130,6 +130,7 @@ fun HomeScreen(api: Api, prefs: Prefs, go: (Screen) -> Unit) {
     val (d, err) = poll(5000) {
         JSONObject().put("health", api.obj("/api/engine/health")).put("scanner", api.obj("/api/engine/scanner"))
             .put("paper", api.obj("/api/engine/paper")).put("risk", api.obj("/api/engine/risk"))
+            .put("wl", runCatching { api.obj("/api/engine/watchlist") }.getOrNull() ?: JSONObject())
     }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
@@ -164,6 +165,8 @@ fun HomeScreen(api: Api, prefs: Prefs, go: (Screen) -> Unit) {
                 }
             }
         }
+        val rep = d.optJSONObject("wl")?.optJSONObject("report")
+        item { WatchlistCard(rep, d.optJSONObject("wl")?.optString("today") ?: "", go) }
         val counts = sc.optJSONObject("counts") ?: JSONObject()
         val bull = sc.optJSONArray("bullish").objs(); val bear = sc.optJSONArray("bearish").objs()
         item {
@@ -202,5 +205,42 @@ fun MoreScreen(go: (Screen) -> Unit) {
             Card(onClick = { go(s) }) { Text(t, fontSize = 16.sp) }
         }
         Text("Paper trading mode only. App never places orders. Trade manually in Kite after your own check.", color = Mut, fontSize = 12.sp)
+    }
+}
+
+@Composable
+fun WatchlistCard(rep: JSONObject?, today: String, go: (Screen) -> Unit) {
+    Card(border = Acc) {
+        if (rep == null) {
+            Text("FII watchlist", fontWeight = FontWeight.SemiBold)
+            Text("Prati roju evening ~7 PM tarvata vastundi (aa roju Kite login undali).", color = Mut, fontSize = 12.sp)
+            return@Card
+        }
+        val fii = rep.optJSONObject("fii") ?: JSONObject()
+        val mood = fii.str("mood") ?: "UNKNOWN"
+        val forDate = rep.optString("for_date")
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(if (forDate == today) "Today's FII watchlist" else "Watchlist for $forDate", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            Pill("FII $mood", when (mood) { "BULLISH" -> Up; "BEARISH" -> Dn; else -> Warn })
+        }
+        fii.str("reason")?.let { Text(it, color = Mut, fontSize = 11.sp) }
+        val picks = rep.optJSONArray("picks").objs()
+        if (picks.isEmpty()) Text("Evvi pass avvaledu (build-up + trend + ban/results). NO TRADE bias.", color = Mut, fontSize = 13.sp)
+        picks.forEach { p ->
+            val ce = p.optString("side") == "CE"
+            Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Pill(p.optString("side"), if (ce) Up else Dn)
+                Spacer(Modifier.width(6.dp))
+                Column(Modifier.weight(1f)) {
+                    TextButton(onClick = { go(Screen.Stock(p.optString("symbol"))) }, contentPadding = PaddingValues(0.dp)) {
+                        Text(p.optString("symbol"), fontWeight = FontWeight.Bold)
+                    }
+                    Text("${signed(p.dbl("price_pct"))}% · OI ${signed(p.dbl("oi_pct"), 1)}% · ${p.optString("buildup")}", fontSize = 12.sp, color = if (ce) Up else Dn)
+                    Text(p.optString("plan"), fontSize = 11.sp, color = Mut)
+                }
+            }
+        }
+        rep.optJSONArray("notes")?.let { if (it.length() > 0) Text("Note: " + it.optString(0), color = Warn, fontSize = 11.sp) }
+        Text("Engine ee stocks ki priority istundi; entry malli live pullback confirm ayyakane.", color = Mut, fontSize = 11.sp)
     }
 }

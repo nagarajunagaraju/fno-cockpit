@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import androidx.compose.ui.graphics.Color
 import org.json.JSONObject
 
 @Composable
@@ -265,6 +266,20 @@ fun BacktestScreen(api: Api) {
                 KV2("Profit factor", n(s.dbl("profit_factor")), "Expectancy", "${n(s.dbl("expectancy"))}R")
                 KV2("Max DD", "${n(s.dbl("max_drawdown"))}R", "Missed fills", "${s.optInt("missed_fills")}")
                 Text("Unit: " + s.optString("unit"), color = Mut, fontSize = 11.sp)
+            }
+        }
+        r.optJSONObject("comparison")?.let { cmp ->
+            item {
+                Card(border = Acc) {
+                    Text("Filters help chestunnaya? (same days, same rules)", fontWeight = FontWeight.SemiBold)
+                    Text("FII known on ${r.optInt("fii_days_known")} days · live uses: ${r.optJSONArray("filters_applied").strs().joinToString(", ").ifBlank { "none" }}", color = Mut, fontSize = 11.sp)
+                    cmp.keys().asSequence().toList().forEach { k ->
+                        val v = cmp.getJSONObject(k)
+                        Text(k, fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                        KV2("Trades · win", "${v.optInt("trades")} · ${n(v.dbl("win_rate"), 1)}%", "Net · PF", "${n(v.dbl("net"))}R · ${n(v.dbl("profit_factor"))}",
+                            Color.Unspecified, col(v.dbl("net")))
+                    }
+                }
             }
         }
         item { Card { Text("Important notes", fontWeight = FontWeight.SemiBold, color = Warn); Bullets(r.optJSONArray("notes").strs()) } }

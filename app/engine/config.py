@@ -122,6 +122,17 @@ DEFAULTS: dict = {
     "max_ivhv_ratio": 1.4,
     "require_websocket": True,        # no new signals while running on REST fallback
 
+    # ---- v3.1: FII watchlist + extra filters -----------------------------------
+    "trend_filter": True,             # CE only above 20 & 50 DMA, PE only below both
+    "sector_filter": True,            # sector index must move the same side (mandatory when available)
+    "fii_gate": True,                 # no trade against yesterday's FII mood (NEUTRAL/unknown allow both)
+    "event_filter": True,             # skip F&O-ban stocks and results-day stocks
+    "watch_bonus": 5,                 # score bonus for a stock on last evening's watchlist, same side
+    "watch_rank_max": 80,             # watchlist covers the top-80 liquid F&O stocks
+    "wl_min_price_pct": 0.5,          # EOD build-up: close change at least this
+    "wl_min_oi_pct": 2.0,             # EOD build-up: futures OI (current+next month) change at least this
+    "wl_size": 5,
+
     # ---- data health ------------------------------------------------------------
     "stale_seconds": 10,
     "scan_interval_seconds": 5,

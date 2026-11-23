@@ -79,9 +79,47 @@ def evaluate_pullback(stock: dict, market: dict, regime: dict, cfg: dict, now: d
         _check(checks, "data_fresh", 0, "Live data (WebSocket) healthy", ok,
                "REST fallback (degraded)" if degraded else (f"{age:.0f}s old" if age is not None else "no data"),
                f"<= {cfg['stale_seconds']}s, WebSocket", mandatory=True)
+    ctx = market.get("daily_ctx") or {}
+    rec_only = bool(cfg.get("bt_filters_record_only"))
+    on_watch = (ctx.get("watch") or {}).get(sym) == side
     rank = stock.get("turnover_rank")
-    _check(checks, "universe", 0, f"Top {cfg['universe_top_n']} liquid stock", None if rank is None else rank <= cfg["universe_top_n"],
-           "rank unavailable" if rank is None else f"turnover rank {rank}", f"<= {cfg['universe_top_n']}", mandatory=rank is not None)
+    lim = cfg["watch_rank_max"] if on_watch else cfg["universe_top_n"]
+    _check(checks, "universe", 0, f"Top {lim} liquid stock" + (" (watchlist)" if on_watch else ""),
+           None if rank is None else rank <= lim,
+           "rank unavailable" if rank is None else f"turnover rank {rank}", f"<= {lim}", mandatory=rank is not None)
+    if cfg.get("event_filter") and ctx.get("available"):
+        bad = []
+        if sym in (ctx.get("ban") or set()):
+            bad.append("in F&O ban")
+        if sym in (ctx.get("results") or set()):
+            bad.append("results day")
+        known = ctx.get("ban_known") or ctx.get("results_known")
+        _check(checks, "event", 0, "No ban / results today", (not bad) if known else None,
+               ", ".join(bad) or ("clear" if known else "ban/results lists unavailable"), "not banned, no results",
+               mandatory=bool(bad))
+    if cfg.get("fii_gate"):
+        mood = ctx.get("fii_mood")
+        if mood in ("BULLISH", "BEARISH"):
+            ok = (mood == "BULLISH") == (side == "CE")
+            _check(checks, "fii", 0, "With FII mood (last evening)", ok, f"FII {mood}",
+                   "CE only when FII bullish, PE only when bearish", mandatory=not rec_only)
+        else:
+            _check(checks, "fii", 0, "FII mood (last evening)", None,
+                   "NEUTRAL: both sides allowed" if mood == "NEUTRAL" else "unavailable", "", mandatory=False)
+    if cfg.get("trend_filter"):
+        dc = stock.get("daily_closes") or []
+        s20 = sum(dc[-20:]) / 20 if len(dc) >= 20 else None
+        s50 = sum(dc[-50:]) / 50 if len(dc) >= 50 else None
+        if s20 and s50:
+            ok = (px > s20 and px > s50) if up > 0 else (px < s20 and px < s50)
+            _check(checks, "trend", 0, "Daily trend (20 & 50 DMA)", ok, f"{px:.2f} vs 20DMA {s20:.2f}, 50DMA {s50:.2f}",
+                   "above both for CE" if up > 0 else "below both for PE", mandatory=not rec_only)
+        else:
+            _check(checks, "trend", 0, "Daily trend (20 & 50 DMA)", None, "not enough daily history", "50 closes",
+                   mandatory=not rec_only)
+    if on_watch and cfg.get("watch_bonus"):
+        _check(checks, "watchlist", 0, "On last evening's FII watchlist", True, side, "same side",
+               cfg["watch_bonus"], cfg["watch_bonus"])
     a = abs(chg)
     _check(checks, "move_range", 1, "Stage 1: move in 1-3% range", cfg["pb_chg_min"] <= a <= cfg["pb_chg_max"],
            f"{chg:+.2f}%", f"{cfg['pb_chg_min']}% to {cfg['pb_chg_max']}%", mandatory=True)
@@ -135,9 +173,11 @@ def evaluate_pullback(stock: dict, market: dict, regime: dict, cfg: dict, now: d
     s_chg = pct(sec.get("ltp"), sec.get("prev_close"))
     n_chg = regime.get("chg")
     if s_chg is not None and n_chg is not None:
-        ok = up * s_chg > 0 and up * (s_chg - n_chg) >= 0
-        _check(checks, "sector", 1, f"Sector strength ({ev['sector']})", ok, f"sector {s_chg:+.2f}% vs NIFTY {n_chg:+.2f}%",
-               "same side, stronger than NIFTY", 5 if ok else 0, 5)
+        same = up * s_chg > 0
+        strong = same and up * (s_chg - n_chg) >= 0
+        _check(checks, "sector", 1, f"Sector moving same side ({ev['sector']})", same,
+               f"sector {s_chg:+.2f}% vs NIFTY {n_chg:+.2f}%", "same side (5 pts if stronger than NIFTY)",
+               5 if strong else 0, 5, mandatory=bool(cfg.get("sector_filter")) and not rec_only)
     else:
         _check(checks, "sector", 1, f"Sector strength ({ev['sector']})", None, "unavailable", "", 0, 5)
     if options_info and options_info.get("available"):
@@ -237,7 +277,7 @@ def evaluate_pullback(stock: dict, market: dict, regime: dict, cfg: dict, now: d
     ev["trigger"] = trig
     ev["levels"] = levels
     pre = sum(c["points"] for c in checks)
-    ev["pre_score"] = round(pre, 1)
+    ev["pre_score"] = round(min(pre, PRE_MAX), 1)
     hard_fail = [c for c in checks if c["mandatory"] and c["passed"] is False]
     missing = [c for c in checks if c["mandatory"] and c["passed"] is None]
     ev["reject_reasons"] = [f"{c['label']}: {c['value']} (needs {c['threshold']})" for c in hard_fail

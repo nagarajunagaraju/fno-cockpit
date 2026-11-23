@@ -16,6 +16,7 @@ from .. import options
 from . import store
 from .config import IST, merged
 from .contracts import pick_expiry, select_contract
+from .eod import context_for as eod_context
 from .layers import evaluate, prescore
 from .planner import build_plan, explain
 from .pullback import contract_points, evaluate_pullback, grade as grade_of
@@ -208,6 +209,8 @@ class Scanner:
     # ================================================================ v3: pullback strategy
     def _cycle_pullback(self, cfg, now, stocks, market):
         regime = detect_regime(market, cfg)
+        ctx = eod_context(now.astimezone(IST).date())
+        market["daily_ctx"] = ctx
         by_sym = {s["symbol"]: s for s in stocks}
         final = {s["symbol"]: evaluate_pullback(s, market, regime, cfg, now, None) for s in stocks}
         cands = [e for e in final.values() if e["status"] in ("TRIGGER", "WATCHING") and e.get("stage") in ("STAGE2", "STAGE3")
@@ -242,6 +245,7 @@ class Scanner:
             "market": {k: market.get(k) for k in ("nifty", "banknifty", "breadth", "vix")},
             "universe": len(stocks), "evaluated": len(final), "option_checked": len(oinfos),
             "alerts_today": self.manager.daily_count(now), "max_alerts": cfg["max_alerts_per_day"],
+            "fii": {"mood": ctx.get("fii_mood"), "watch": ctx.get("watch") or {}, "available": ctx.get("available")},
             "bullish": [x for x in slim if x["direction"] == "BULL" and x["status"] in live_states][:25],
             "bearish": [x for x in slim if x["direction"] == "BEAR" and x["status"] in live_states][:25],
             "rejected": [x for x in slim if x["status"] == "REJECTED"][:60],
@@ -278,7 +282,7 @@ class Scanner:
             if bad:
                 rec["result"] = f"rejected: {bad[0]['label']} {bad[0]['value']}"
                 return
-            score = round(ev["pre_score"] + pts, 1)
+            score = round(min(100, ev["pre_score"] + pts), 1)
             g = grade_of(score, regime, cfg)
             rec["score"] = score
             if g is None:
@@ -296,9 +300,10 @@ class Scanner:
             if g == "B":
                 plan["plan_notes"] = plan.get("plan_notes", []) + ["B grade backup: consider half size"]
             exp = explain(ev, sel, plan, oinfo)
+            fii_txt = f" FII {ctx_m}." if (ctx_m := (self.snapshot.get("fii") or {}).get("mood")) else ""
             exp["why_stock"] = (f"[{g}] {ev['symbol']} {ev['metrics']['chg_pct']:+.2f}% with RVOL "
                                 f"{ev['metrics'].get('rvol')}x and {ev['metrics'].get('buildup')}; pulled back to VWAP "
-                                f"and turned. NIFTY regime {regime.get('regime')}. Score {score:g}/100.")
+                                f"and turned. NIFTY regime {regime.get('regime')}.{fii_txt} Score {score:g}/100.")
             r = self.manager.on_trigger(ev, sel, plan, exp, now, mode=self.feed.mode)
             rec["result"] = f"signal #{r['id']} [{g}]" if r["created"] else f"not sent: {r['reason']}"
         except Exception as e:

@@ -61,7 +61,7 @@ object Notif {
                     "Trigger: ${p.optString("entry_trigger")}"
             }
         }
-        val ch = if (kind == "TRIGGERED") CH_SIGNAL else CH_UPDATE
+        val ch = if (kind == "TRIGGERED" || kind == "WATCHLIST") CH_SIGNAL else CH_UPDATE
         val n = NotificationCompat.Builder(ctx, ch)
             .setSmallIcon(R.drawable.ic_stat_signal)
             .setContentTitle(title)

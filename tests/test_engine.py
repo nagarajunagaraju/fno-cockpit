@@ -395,7 +395,8 @@ def pb_stock(**kw):
          "day_open": 100.0, "rvol_baseline": {m: 800.0 * (m + 1) for m in range(375)},
          "fut": {"ltp": 102.0 if up else 98.0, "prev_close": 99.1 if up else 101.1, "oi": 1_060_000, "prev_oi": 1_000_000},
          "fut_hist": [(40, 1_040_000, 101.0), (59, 1_060_000, 101.5)], "fut_bq": 1.5 if up else 0.6, "fut_sq": 1.0,
-         "turnover_rank": 5, "upper_circuit": 120, "lower_circuit": 80, "data_ts": None}
+         "turnover_rank": 5, "upper_circuit": 120, "lower_circuit": 80, "data_ts": None,
+         "daily_closes": [95.0] * 60 if up else [105.0] * 60}
     s.update(kw)
     return s
 
@@ -519,7 +520,106 @@ def test_pullback_backtest_runs():
     src = feed.backtest_source(15)
     r = run(src["symbols"], src["loader"], src["indices"], CFG, days=15, source=src["source"])
     assert r["stats"].get("trades", 0) >= 1 and "by_regime" in r["stats"]
+    assert "+ trend + sector + FII" in r["comparison"]
     per_day = {}
     for t in r["trades"]:
         per_day[t["day"]] = per_day.get(t["day"], 0) + 1
     assert max(per_day.values()) <= CFG["max_alerts_per_day"]
+
+
+# ------------------------------------------------------------ v3.1: FII watchlist + filters
+from app.engine import eod  # noqa: E402
+
+PART_HDR = ("Client Type,Future Index Long,Future Index Short,Future Stock Long,Future Stock Short\t,"
+            "Option Index Call Long,Option Index Put Long,Option Index Call Short,Option Index Put Short,"
+            "Option Stock Call Long,Option Stock Put Long,Option Stock Call Short,Option Stock Put Short,"
+            "Total Long Contracts\t,Total Short Contracts\t")
+
+
+def part_csv(fii_idx_long, fii_stk_long, fii_call_long):
+    rows = ['"Participant wise Open Interest (no. of contracts) in Equity Derivatives as on Nov 23, 2026"', PART_HDR]
+    for who, il, sl, cl in (("Client", 100, 100, 100), ("DII", 100, 100, 100),
+                            ("FII", fii_idx_long, fii_stk_long, fii_call_long), ("Pro", 100, 100, 100)):
+        rows.append(f"{who},{il},1000,{sl},1000,{cl},500,500,500,10,10,10,10,0,0")
+    rows.append("TOTAL,1,1,1,1,1,1,1,1,1,1,1,1,0,0")
+    return "\n".join(rows)
+
+
+def test_participant_parse_and_mood():
+    a = eod.parse_participant(part_csv(1200, 1500, 900))
+    b = eod.parse_participant(part_csv(1000, 1400, 800))
+    assert a["FII"]["fut_idx_long"] == 1200 and a["FII"]["fut_stk_short"] == 1000
+    m = eod.fii_mood(a, b)
+    assert m["mood"] == "BULLISH" and m["vote_sum"] == 3
+    assert eod.fii_mood(b, a)["mood"] == "BEARISH"
+    assert eod.fii_mood(a, None)["mood"] is None          # no previous day -> unknown, not guessed
+
+
+def test_ban_parse():
+    txt = "Securities in Ban For Trade Date 24-NOV-2026:\n1,SAIL\n2,RBLBANK\n"
+    assert eod.parse_ban(txt) == ["SAIL", "RBLBANK"]
+    assert eod.parse_ban("Securities in Ban For Trade Date 24-NOV-2026: NIL\n") == []
+
+
+def _row(sym, price, oi, trend):
+    return {"symbol": sym, "rank": 1, "close": 100, "high": 101, "low": 99, "price_pct": price, "oi_pct": oi,
+            "volume": 1, "sma20": 1, "sma50": 1, "trend": trend, "buildup": eod.classify(price, oi, CFG)}
+
+
+def test_watchlist_follows_fii_and_filters():
+    rows = [_row("AAA", 2.0, 8.0, "UP"), _row("BBB", 1.0, 3.0, "UP"), _row("CCC", 1.5, 5.0, "MIXED"),
+            _row("DDD", -2.0, 6.0, "DOWN"), _row("EEE", 1.2, 4.0, "UP"), _row("FFF", 0.2, 9.0, "UP")]
+    rep = eod.build_report(rows, {"mood": "BULLISH"}, ["EEE"], {}, CFG, dt.date(2026, 11, 27))
+    assert rep["for_date"] == "2026-11-30"                         # Friday -> Monday
+    assert [p["symbol"] for p in rep["picks"]] == ["AAA", "BBB"]  # CCC trend mixed, EEE banned, FFF no build-up
+    assert all(p["side"] == "CE" for p in rep["picks"])
+    skipped = {s["symbol"]: s["skip"] for s in rep["skipped"]}
+    assert "F&O ban" in skipped["EEE"] and "trend" in skipped["CCC"]
+    bear = eod.build_report(rows, {"mood": "BEARISH"}, [], {}, CFG, dt.date(2026, 11, 23))
+    assert [p["symbol"] for p in bear["picks"]] == ["DDD"] and bear["picks"][0]["side"] == "PE"
+    neu = eod.build_report(rows, {"mood": None}, [], {}, CFG, dt.date(2026, 11, 23))
+    assert {p["side"] for p in neu["picks"]} == {"CE", "PE"}
+
+
+def _ctx_market(base, **ctx):
+    m = dict(base)
+    m["daily_ctx"] = {"available": True, "watch": {}, "ban": set(), "results": set(), **ctx}
+    return m
+
+
+def test_fii_gate_trend_sector_and_ban_block():
+    st = pb_stock(up=True)
+    ok = evaluate_pullback(st, _ctx_market(PB_MARKET, fii_mood="BULLISH"), detect(PB_MARKET, CFG), CFG, pb_now(st), None, live=False)
+    assert ok["status"] == "TRIGGER"
+    m = _ctx_market(PB_MARKET, fii_mood="BEARISH")
+    ev = evaluate_pullback(st, m, detect(m, CFG), CFG, pb_now(st), None, live=False)
+    assert ev["status"] == "REJECTED" and any("FII" in r for r in ev["reject_reasons"])
+    m = _ctx_market(PB_MARKET, fii_mood="NEUTRAL")
+    assert evaluate_pullback(st, m, detect(m, CFG), CFG, pb_now(st), None, live=False)["status"] == "TRIGGER"
+    down = pb_stock(up=True, daily_closes=[110.0] * 60)        # below 50 DMA -> no CE
+    ev = evaluate_pullback(down, PB_MARKET, detect(PB_MARKET, CFG), CFG, pb_now(down), None, live=False)
+    assert ev["status"] == "REJECTED" and any("trend" in r.lower() for r in ev["reject_reasons"])
+    weak = dict(PB_MARKET, sectors={"NIFTY IT": {"ltp": 995, "prev_close": 1000}})
+    ev = evaluate_pullback(st, weak, detect(weak, CFG), CFG, pb_now(st), None, live=False)
+    assert ev["status"] == "REJECTED" and any("Sector" in r for r in ev["reject_reasons"])
+    m = _ctx_market(PB_MARKET, ban={"TESTPB"}, ban_known=True)
+    ev = evaluate_pullback(st, m, detect(m, CFG), CFG, pb_now(st), None, live=False)
+    assert ev["status"] == "REJECTED" and any("ban" in r for r in ev["reject_reasons"])
+
+
+def test_watchlist_widens_universe_and_adds_points():
+    st = pb_stock(up=True, turnover_rank=60)
+    ev = evaluate_pullback(st, PB_MARKET, detect(PB_MARKET, CFG), CFG, pb_now(st), None, live=False)
+    assert ev["status"] == "REJECTED"                          # rank 60 > top 40
+    m = _ctx_market(PB_MARKET, watch={"TESTPB": "CE"})
+    ev2 = evaluate_pullback(st, m, detect(m, CFG), CFG, pb_now(st), None, live=False)
+    assert ev2["status"] == "TRIGGER"
+    assert any(c["key"] == "watchlist" and c["points"] == CFG["watch_bonus"] for c in ev2["checks"])
+
+
+def test_context_only_for_its_date():
+    store.kv_set("eod_report", {"for_date": "2026-11-24", "fii": {"mood": "BULLISH"}, "watch": {"X": "CE"},
+                                "ban": ["Y"], "results": {}})
+    assert eod.context_for(dt.date(2026, 11, 24))["fii_mood"] == "BULLISH"
+    assert eod.context_for(dt.date(2026, 11, 25))["available"] is False
+    store.kv_set("eod_report", None)

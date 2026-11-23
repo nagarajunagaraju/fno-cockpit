@@ -17,7 +17,7 @@ import kotlin.concurrent.thread
 
 /**
  * Foreground service that polls YOUR server for new signal events and shows them as notifications.
- * Every 10 s during 09:00–15:40 IST on weekdays, every 5 min otherwise. No Firebase needed.
+ * Every 10 s during 09:00–15:40 IST, every 5 min 18:45–21:45 (evening watchlist), asleep otherwise. No Firebase needed.
  */
 class AlertService : Service() {
     @Volatile private var running = false
@@ -51,6 +51,14 @@ class AlertService : Service() {
         if (now.dayOfWeek == DayOfWeek.SATURDAY || now.dayOfWeek == DayOfWeek.SUNDAY) return false
         val t = now.toLocalTime()
         return t.isAfter(LocalTime.of(9, 0)) && t.isBefore(LocalTime.of(15, 40))
+    }
+
+    /** 18:45–21:45 IST weekdays: the evening FII watchlist arrives here (polled every 5 min). */
+    private fun eveningWindow(): Boolean {
+        val now = ZonedDateTime.now(ZoneId.of("Asia/Kolkata"))
+        if (now.dayOfWeek == DayOfWeek.SATURDAY || now.dayOfWeek == DayOfWeek.SUNDAY) return false
+        val t = now.toLocalTime()
+        return t.isAfter(LocalTime.of(18, 45)) && t.isBefore(LocalTime.of(21, 45))
     }
 
     private fun loop() {
@@ -90,23 +98,30 @@ class AlertService : Service() {
             val sleepMs = when {
                 failures > 0 && inWindow -> minOf(60_000L, 10_000L * failures)
                 inWindow -> 10_000L
-                else -> {   // market closed: sleep until next weekday 09:00 IST (no polling, no battery use)
-                    val untilOpen = msUntilNextOpen()
-                    updateStatus(prefs, "Sleeping until next market day 09:00")
-                    untilOpen
+                eveningWindow() -> 300_000L
+                else -> {   // closed: sleep until the next window (09:00 market or 18:45 watchlist), no polling
+                    val (ms, label) = msUntilNextWindow()
+                    updateStatus(prefs, "Sleeping until $label")
+                    ms
                 }
             }
             try { Thread.sleep(sleepMs) } catch (_: InterruptedException) { }
         }
     }
 
-    private fun msUntilNextOpen(): Long {
-        val zone = ZoneId.of("Asia/Kolkata")
-        val now = ZonedDateTime.now(zone)
-        var next = now.withHour(9).withMinute(0).withSecond(5).withNano(0)
+    private fun nextAt(now: ZonedDateTime, h: Int, m: Int): ZonedDateTime {
+        var next = now.withHour(h).withMinute(m).withSecond(5).withNano(0)
         if (!now.isBefore(next)) next = next.plusDays(1)
         while (next.dayOfWeek == DayOfWeek.SATURDAY || next.dayOfWeek == DayOfWeek.SUNDAY) next = next.plusDays(1)
-        return java.time.Duration.between(now, next).toMillis().coerceAtLeast(60_000L)
+        return next
+    }
+
+    private fun msUntilNextWindow(): Pair<Long, String> {
+        val now = ZonedDateTime.now(ZoneId.of("Asia/Kolkata"))
+        val open = nextAt(now, 9, 0)
+        val eve = nextAt(now, 18, 46)
+        val (next, label) = if (eve.isBefore(open)) eve to "evening watchlist 18:45" else open to "next market day 09:00"
+        return java.time.Duration.between(now, next).toMillis().coerceAtLeast(60_000L) to label
     }
 
     private fun updateStatus(prefs: Prefs, s: String) {

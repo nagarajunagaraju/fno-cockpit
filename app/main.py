@@ -78,6 +78,12 @@ if acquire_singleton(engine_store.DATA / "scanner.lock"):
     CTX["scanner"] = scanner
     CTX["singleton"] = "this process owns the scanner"
     scanner.start()
+    if not DEMO:
+        from .engine.eod import EodJob
+        from .engine.config import IST as _IST
+        CTX["eod"] = EodJob(feed, get_cfg,
+                            lambda k, t, b, p: scanner.manager.emit(dt.datetime.now(_IST), k, t, b, None, p))
+        CTX["eod"].start()
 else:
     CTX["singleton"] = "another process already runs the scanner - not started here"
     log.warning(CTX["singleton"])

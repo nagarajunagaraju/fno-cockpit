@@ -27,7 +27,18 @@ BT_MAX = PRE_TESTABLE + RR_POINTS
 def _bt_cfg(cfg):
     c = copy.deepcopy(cfg)
     c["bt_fut_optional"] = True
+    c["bt_filters_record_only"] = True   # trend / sector / FII are recorded, variants applied afterwards
+    c["sector_filter"] = c["trend_filter"] = c["fii_gate"] = True
     return c
+
+
+VARIANTS = {"v3 base (no new filters)": (), "+ daily trend": ("trend",), "+ trend + sector": ("trend", "sector"),
+            "+ trend + sector + FII": ("trend", "sector", "fii")}
+
+
+def _passes(c, keys):
+    # a filter that could not be judged (None) does not block, same as live
+    return all(c["flags"].get(k) is not False for k in keys)
 
 
 def _ranks_by_day(dailies: dict[str, list[dict]], days: list[str]) -> dict[str, dict[str, int]]:
@@ -96,7 +107,8 @@ def _simulate_trade(bars, start_m, side, sl, t1, t2, entry_ref, cfg, slip_pct, g
 
 def run(symbols: list[str], load_symbol, indices: dict, live_cfg: dict, days: int = 120,
         cost_pct: float = 0.20, slip_pct: float = 0.03, gap_miss_pct: float = 0.3,
-        progress: dict | None = None, source: str = "KITE", notes: list | None = None) -> dict:
+        progress: dict | None = None, source: str = "KITE", notes: list | None = None,
+        fii_moods: dict | None = None) -> dict:
     """load_symbol(sym) -> {"lot_size", "daily": [...], "minute": {day: bars}, "fut_minute": {day: bars}}"""
     cfg = _bt_cfg(live_cfg)
     lookback = cfg["rvol_lookback_sessions"]
@@ -159,13 +171,15 @@ def run(symbols: list[str], load_symbol, indices: dict, live_cfg: dict, days: in
                 nifty_s = {"ltp": nmap[m]["c"], "prev_close": npc, "day_open": nb[0]["o"],
                            "or_high": max(x["h"] for x in orb) if orb else None,
                            "or_low": min(x["l"] for x in orb) if orb else None}
-                market = {"nifty": nifty_s, "sectors": {}, "breadth": {}, "vix": None}
+                market = {"nifty": nifty_s, "sectors": {}, "breadth": {}, "vix": None,
+                          "daily_ctx": {"available": True, "fii_mood": (fii_moods or {}).get(d)}}
                 if m in smap and spc:
                     market["sectors"][sec] = {"ltp": smap[m]["c"], "prev_close": spc}
                 regime = detect_regime(market, cfg)
                 stock = {"symbol": sym, "sector": sec, "lot_size": data.get("lot_size"), "bars": bars[:i + 1],
                          "prev_close": prev["close"], "day_open": bars[0]["o"], "rvol_baseline": base,
-                         "turnover_rank": ranks.get(d, {}).get(sym)}
+                         "turnover_rank": ranks.get(d, {}).get(sym),
+                         "daily_closes": [r["close"] for r in prior_daily[-60:]]}
                 f = fb.get(m)
                 if f and f.get("oi") and fprev_last and fprev_last.get("oi"):
                     stock["fut"] = {"ltp": f["c"], "prev_close": fprev_last["c"], "oi": f["oi"], "prev_oi": fprev_last["oi"]}
@@ -179,42 +193,63 @@ def run(symbols: list[str], load_symbol, indices: dict, live_cfg: dict, days: in
                 rr_pts = 10 if rr_u >= 2 else (6 if rr_u >= 1.5 else 0)
                 score = round((ev["pre_score"] + rr_pts) * 100 / BT_MAX, 1)
                 g = grade_of(score, regime, cfg)
-                if g is None:
-                    break
+                flags = {c["key"]: c["passed"] for c in ev["checks"] if c["key"] in ("trend", "sector", "fii")}
                 res = _simulate_trade(bars, m + 1, ev["direction"], lv["u_sl"], lv["u_t1"], lv["u_t2"],
-                                      lv["entry"], cfg, slip_pct, gap_miss_pct)
+                                      lv["entry"], cfg, slip_pct, gap_miss_pct) if g else {"status": "NO_GRADE"}
                 if res:
                     cands.append({"day": d, "symbol": sym, "group": risk_group(sym), "m": m, "time": b["t"],
                                   "hour": b["t"][:2], "side": "CE" if ev["direction"] == "BULL" else "PE",
-                                  "grade": g, "score": score, "regime": regime.get("regime"),
+                                  "grade": g, "score": score, "regime": regime.get("regime"), "flags": flags,
                                   "fut_data": "fut" in stock, **res})
-                break    # one signal per stock per day
+                # all triggers kept; each variant takes the first one per stock per day that passes its filters
         if progress is not None:
             progress["done"] = si + 1
 
-    # ---- portfolio rules in time order ----
-    accepted = []
+    # ---- portfolio rules in time order, per filter variant ----
     lock_r = cfg["max_daily_loss_pct"] / cfg["risk_per_trade_pct"]
     b_min = minute_index(hm(cfg["b_grade_time"]), cfg)
-    for d in test_days:
-        day_c = sorted([c for c in cands if c["day"] == d], key=lambda c: (c["m"], -c["score"]))
-        taken, day_r = [], 0.0
-        for c in day_c:
-            if len(taken) >= cfg["max_alerts_per_day"] or day_r <= -lock_r:
-                break
-            if c["grade"] == "B" and (c["m"] < b_min or taken):
-                continue
-            open_now = [t for t in taken if t.get("exit_m", 999) > c["m"]]
-            if len(open_now) >= cfg["max_open_positions"]:
-                continue
-            if sum(1 for t in open_now if t["group"] == c["group"]) >= cfg["max_per_sector"]:
-                continue
-            if c["status"] == "CLOSED":
-                c["pnl_r"] = round((c["gross"] - cost_pct / 100 * c["entry"]) / c["risk"], 3)
-                day_r += c["pnl_r"]
-            taken.append(c)
-        accepted += taken
 
+    def portfolio(keys):
+        first = {}
+        for c in sorted(cands, key=lambda c: (c["day"], c["symbol"], c["m"])):
+            k = (c["day"], c["symbol"])
+            if k not in first and _passes(c, keys):
+                first[k] = c
+        pool = [c for c in first.values() if c["status"] != "NO_GRADE"]
+        acc = []
+        for d in test_days:
+            day_c = sorted([c for c in pool if c["day"] == d], key=lambda c: (c["m"], -c["score"]))
+            taken, day_r = [], 0.0
+            for c in day_c:
+                if len(taken) >= cfg["max_alerts_per_day"] or day_r <= -lock_r:
+                    break
+                if c["grade"] == "B" and (c["m"] < b_min or taken):
+                    continue
+                open_now = [t for t in taken if t.get("exit_m", 999) > c["m"]]
+                if len(open_now) >= cfg["max_open_positions"]:
+                    continue
+                if sum(1 for t in open_now if t["group"] == c["group"]) >= cfg["max_per_sector"]:
+                    continue
+                c = dict(c)
+                if c["status"] == "CLOSED":
+                    c["pnl_r"] = round((c["gross"] - cost_pct / 100 * c["entry"]) / c["risk"], 3)
+                    day_r += c["pnl_r"]
+                taken.append(c)
+            acc += taken
+        return acc
+
+    comparison = {}
+    for name, keys in VARIANTS.items():
+        acc = portfolio(keys)
+        cl = [c for c in acc if c["status"] == "CLOSED"]
+        st = trade_stats([{"pnl": c["pnl_r"], "symbol": c["symbol"], "hour": c["hour"], "score": c["grade"],
+                           "side": c["side"]} for c in cl])
+        comparison[name] = {k: st.get(k) for k in ("trades", "win_rate", "net", "expectancy", "profit_factor",
+                                                   "max_drawdown")}
+        comparison[name]["avg_trades_per_day"] = round(len(cl) / len(test_days), 2) if test_days else 0
+    live_keys = tuple(k for k, on in (("trend", live_cfg.get("trend_filter")), ("sector", live_cfg.get("sector_filter")),
+                                      ("fii", live_cfg.get("fii_gate"))) if on)
+    accepted = portfolio(live_keys)
     closed = [c for c in accepted if c["status"] == "CLOSED"]
     stats = trade_stats([{"pnl": c["pnl_r"], "symbol": c["symbol"], "hour": c["hour"], "score": c["grade"],
                           "side": c["side"]} for c in closed])
@@ -234,16 +269,20 @@ def run(symbols: list[str], load_symbol, indices: dict, live_cfg: dict, days: in
         insufficient.append(f"only {len(closed)} trades (need 30+)")
     fut_cov = sum(1 for c in closed if c["fut_data"])
     return {
-        "strategy": "pullback v3", "source": source, "symbols": len(symbols), "tested_days": test_days,
+        "strategy": "pullback v3.1", "source": source, "symbols": len(symbols), "tested_days": test_days,
         "params": {"days": days, "cost_pct_round_trip": cost_pct, "slippage_pct_per_side": slip_pct,
                    "score_scale": f"testable points scaled to 100 (max {BT_MAX} raw)"},
         "stats": stats, "candidates_before_portfolio_rules": len(cands),
+        "filters_applied": list(live_keys), "comparison": comparison,
+        "fii_days_known": sum(1 for d in test_days if (fii_moods or {}).get(d)),
         "sufficiency": "INSUFFICIENT: " + "; ".join(insufficient) if insufficient else "OK",
         "notes": (notes or []) + [
             "Option premium, IV, Greeks, order-book depth and option-chain OI are NOT in the backtest "
             "(no historical data). Results are in underlying R-multiples; paper trading measures option P&L.",
             f"Futures OI history existed for {fut_cov} of {len(closed)} trades (Kite keeps minute OI only for the "
             "current futures contract); other trades were judged without the futures build-up rule.",
+            "F&O ban list and results-day skip are NOT in the backtest (no history); the FII filter uses NSE "
+            "participant files of the previous trading day where they could be downloaded.",
             "Universe = today's liquid F&O stocks (survivorship bias). Entry at next 1-min open; "
             "stop assumed before target inside a bar.",
         ],
