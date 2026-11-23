@@ -35,7 +35,7 @@ ul{margin:4px 0 4px 18px;padding:0}button{background:#1f2430;color:var(--tx);bor
   <section><h2>4 · Bearish opportunities</h2><div id="bear"></div></section>
   <section class="wide"><h2>5–8 · Triggered signals (contract · explanation · entry / SL / targets)</h2><div id="triggered"></div></section>
   <section class="wide"><h2>9 · Paper trading positions</h2><div id="paper"></div></section>
-  <section class="wide"><h2>10 · Backtesting results</h2><div><button id="btRun">Run backtest (30 days)</button> <span id="btState" class="mut"></span></div><div id="bt"></div></section>
+  <section class="wide"><h2>10 · Backtesting results</h2><div><button id="btRun">Run backtest (120 days)</button> <span id="btState" class="mut"></span></div><div id="bt"></div></section>
   <section class="wide"><h2>11 · Signal history</h2><div id="history"></div></section>
 </main>
 <script>
@@ -49,14 +49,14 @@ async function api(p, o = {}) { const r = await fetch(p, {headers: {"X-App-Token
 
 function oppTable(xs) {
   if (!xs.length) return `<p class="mut">No setup right now — NO TRADE is a valid answer.</p>`;
-  return `<table><tr><th>Stock</th><th>Status</th><th class="r">Score</th><th class="r">Chg%</th><th class="r">RVOL</th><th>Build-up</th><th>Note</th></tr>${xs.map(x => `<tr><td><b>${esc(x.symbol)}</b><br><span class="mut">${esc(x.sector)}</span></td><td>${esc(x.status)}</td><td class="r">${n(x.score,1)}</td><td class="r ${cl(x.metrics.chg_pct)}">${n(x.metrics.chg_pct)}</td><td class="r">${n(x.metrics.rvol)}</td><td>${esc(x.metrics.buildup)}</td><td class="mut">${esc(x.wait_reason || (x.missing||[])[0] || "")}</td></tr>`).join("")}</table>`;
+  return `<table><tr><th>Stock</th><th>Status</th><th class="r">Score</th><th class="r">Chg%</th><th class="r">RVOL</th><th>Build-up</th><th>Note</th></tr>${xs.map(x => `<tr><td><b>${esc(x.symbol)}</b><br><span class="mut">${esc(x.sector)}</span></td><td>${esc(x.stage === "STAGE2" ? "Stage 2 pullback" : x.stage === "STAGE1" ? "Stage 1 strong" : x.status)}</td><td class="r">${n(x.score,1)}</td><td class="r ${cl(x.metrics.chg_pct)}">${n(x.metrics.chg_pct)}</td><td class="r">${n(x.metrics.rvol)}</td><td>${esc(x.metrics.buildup)}</td><td class="mut">${esc(x.wait_reason || (x.missing||[])[0] || "")}</td></tr>`).join("")}</table>`;
 }
 
 function sigCard(s) {
   const p = s.plan, e = s.explanation || {}, sel = s.selection || {};
   const li = a => (a || []).map(x => `<li>${esc(x)}</li>`).join("");
   return `<div class="sig ${s.bias}">
-   <div><b>#${s.id} ${esc(s.symbol)}</b> · <span class="${s.bias === "BULL" ? "up" : "dn"}">${p.direction} → BUY ${p.option_type}</span> · <span class="pill">${esc(s.status)}</span> · Score ${n(s.score,1)}/10 · ${esc(p.confidence)}</div>
+   <div><b>#${s.id} ${esc(s.symbol)}</b> · <span class="${s.bias === "BULL" ? "up" : "dn"}">${p.direction} → BUY ${p.option_type}</span> · <span class="pill">${esc(s.status)}</span> · Score ${n(s.score,1)}/${p.max_score || 10} · ${esc(p.confidence)}</div>
    <div class="mut">${esc(p.tradingsymbol)} · strike ${n(p.strike)} · expiry ${esc(p.expiry)} (${n(p.dte,1)}d) · signal ${esc(p.signal_time)} · data ${esc(p.data_time)}</div>
    <div class="grid2" style="margin-top:6px">
      <div class="kv"><span>Entry range</span><b>${n(p.entry_range[0])} – ${n(p.entry_range[1])}</b></div><div class="kv"><span>Stop-loss</span><b class="dn">${n(p.sl_premium)}</b></div>
@@ -85,7 +85,7 @@ async function refresh() {
     const m = sc.market || {}, pc = o => o && o.prev_close ? (o.ltp / o.prev_close - 1) * 100 : null;
     $("#mkt").innerHTML = `NIFTY <span class="${cl(pc(m.nifty))}">${n(pc(m.nifty))}%</span> · BANKNIFTY <span class="${cl(pc(m.banknifty))}">${n(pc(m.banknifty))}%</span>`;
     $("#upd").textContent = sc.updated || "";
-    $("#market").innerHTML = `<div class="kv"><span>NIFTY 50</span><b>${n(m.nifty && m.nifty.ltp)} (${n(pc(m.nifty))}%)</b></div><div class="kv"><span>BANK NIFTY</span><b>${n(m.banknifty && m.banknifty.ltp)} (${n(pc(m.banknifty))}%)</b></div><div class="kv"><span>Breadth (F&amp;O)</span><b>${m.breadth ? m.breadth.adv + " up / " + m.breadth.dec + " down" : "—"}</b></div><div class="kv"><span>Scanner</span><b>${esc(sc.status)}</b></div>`;
+    $("#market").innerHTML = `<div class="kv"><span>NIFTY 50</span><b>${n(m.nifty && m.nifty.ltp)} (${n(pc(m.nifty))}%)</b></div><div class="kv"><span>BANK NIFTY</span><b>${n(m.banknifty && m.banknifty.ltp)} (${n(pc(m.banknifty))}%)</b></div><div class="kv"><span>Breadth (F&amp;O)</span><b>${m.breadth ? m.breadth.adv + " up / " + m.breadth.dec + " down" : "—"}</b></div><div class="kv"><span>Scanner</span><b>${esc(sc.status)}</b></div><div class="kv"><span>Regime</span><b>${esc((sc.regime||{}).regime)}</b></div><div class="kv"><span>Alerts today</span><b>${sc.alerts_today ?? "—"} / ${sc.max_alerts ?? "—"}</b></div>`;
     const st = rk.state, lim = rk.limits;
     $("#risk").innerHTML = `<div class="kv"><span>Day P&amp;L</span><b class="${cl(st.day_pnl)}">${rs(st.day_pnl)}</b></div><div class="kv"><span>Daily loss limit</span><b>${rs(st.max_daily_loss)} ${st.locked ? '<span class="dn">LOCKED</span>' : ""}</b></div><div class="kv"><span>Open positions</span><b>${st.open_positions}/${st.max_open_positions}</b></div><div class="kv"><span>Exposure</span><b>${rs(st.exposure)} / ${rs(st.max_exposure)}</b></div><div class="kv"><span>Risk per trade</span><b>${lim.risk_per_trade_pct}% of ${rs(lim.capital)}</b></div><div class="kv"><span>Min score / min R:R</span><b>${lim.min_score} / ${lim.min_rr}</b></div>`;
     const f = h.feed || {};
@@ -126,7 +126,7 @@ async function loadBt() {
       <div class="grid2"><div><b>By time</b><table>${grp(s.by_hour)}</table><b>CE vs PE</b><table>${grp(s.by_side)}</table></div><div><b>By score</b><table>${grp(s.by_score)}</table><b>By stock</b><table>${grp(s.by_symbol)}</table></div></div>`;
   } catch (e) {}
 }
-$("#btRun").onclick = async () => { try { await api("/api/engine/backtest", {method: "POST", body: JSON.stringify({days: 30})}); loadBt(); } catch (e) { $("#btState").textContent = e.message; } };
+$("#btRun").onclick = async () => { try { await api("/api/engine/backtest", {method: "POST", body: JSON.stringify({days: 120})}); loadBt(); } catch (e) { $("#btState").textContent = e.message; } };
 refresh(); loadHistory(); loadBt();
 setInterval(refresh, 5000); setInterval(loadHistory, 30000); setInterval(loadBt, 10000);
 </script>

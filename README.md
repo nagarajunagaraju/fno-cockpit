@@ -1,4 +1,14 @@
-# F&O Cockpit v2 — Live Options Signal Engine + Android App
+# F&O Cockpit v3 — Live Options Signal Engine + Android App
+
+**v3 (Nov 2026): one setup, max 3 alerts a day.** "Strong stock, first pullback":
+Stage 1 strength (1–3% move, RVOL ≥ 1.5x, futures build-up, NIFTY regime agrees, top-40 liquid stock) →
+Stage 2 pullback to VWAP on lighter volume → Stage 3 a 5-minute candle turns back with volume.
+100-point score: A+ ≥ 85, A ≥ 75 alert; one B (≥ 65) backup after 11:30 only on days with no A alert.
+Stop below the pullback low, T1 = day high (min 1.5R), T2 = 2.5R, 30-min time stop, 15:15 square-off.
+Max 3 alerts/day, 1 per stock, 1 per sector group, daily loss lock 1.5%. Full rule spec: the "F&O Cockpit v3 – Final Signal Rules" doc.
+Re-login no longer needs a server reboot (WebSocket reconnects with the new token); tokens from before 06:00 IST are treated as expired.
+The server checks GitHub for updates every weekday 08:20 IST (`fno-cockpit-autoupdate.timer`; disable with
+`sudo systemctl disable --now fno-cockpit-autoupdate.timer`).
 
 Nee personal intraday **options-buying signal engine**: NSE F&O stocks anni continuous ga scan chestundi.
 Entry trigger valid ayinappude phone ki alert vastundi, exact CE/PE contract, entry, SL, T1, T2,
@@ -22,7 +32,7 @@ quantity, and full reasoning tho.
    ```
    It asks for the Kite key/secret, installs everything with HTTPS, and prints your **Server URL**, **App token**
    and the **Redirect URL** to put in Kite. Run the same command again any time to update.
-4. **Phone:** install `dist/FnO-Cockpit-v2.0.0.apk` → enter Server URL + App token → allow notifications and background running.
+4. **Phone:** install `dist/FnO-Cockpit-v3.0.0.apk` → enter Server URL + App token → allow notifications and background running.
 5. **Every trading day ~9:00:** app → Login with Kite.
 
 Detailed / manual steps are below.

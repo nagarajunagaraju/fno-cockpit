@@ -4,7 +4,8 @@ set -euo pipefail
 APP_DIR=/opt/fno-cockpit
 SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ts=$(date +%Y%m%d-%H%M%S)
-tar czf /root/fno-cockpit-backup-$ts.tgz -C /opt fno-cockpit --exclude=.venv
+tar czf /root/fno-cockpit-backup-$ts.tgz --exclude=.venv --exclude=data/cache -C /opt fno-cockpit
+ls -1t /root/fno-cockpit-backup-*.tgz 2>/dev/null | tail -n +6 | xargs -r rm -f   # keep last 5 backups
 cp -r "$SRC_DIR"/app "$SRC_DIR"/static "$SRC_DIR"/requirements.txt "$SRC_DIR"/tests "$APP_DIR"/
 "$APP_DIR/.venv/bin/pip" install -r "$APP_DIR/requirements.txt" -q
 chown -R cockpit:cockpit "$APP_DIR"

@@ -14,6 +14,7 @@ import math
 from . import store
 from .charges import option_round_trip
 from .config import IST, hm
+from .sectors import risk_group
 
 log = logging.getLogger("cockpit.signals")
 OPEN_STATES = ("TRIGGERED", "ACTIVE")
@@ -120,11 +121,31 @@ class SignalManager:
         return None
 
     # ------------------------------------------------------------ create
+    def daily_count(self, now) -> int:
+        day = now.astimezone(IST).date().isoformat()
+        return store.q("SELECT COUNT(*) AS n FROM signals WHERE day=?", (day,))[0]["n"]
+
+    def cap_reason(self, symbol, now) -> str | None:
+        cfg = self.cfg()
+        if self.daily_count(now) >= cfg.get("max_alerts_per_day", 99):
+            return f"daily alert cap reached ({cfg['max_alerts_per_day']})"
+        day = now.astimezone(IST).date().isoformat()
+        if store.q("SELECT 1 FROM signals WHERE day=? AND symbol=? LIMIT 1", (day, symbol)):
+            return "already signalled this stock today"
+        grp = risk_group(symbol)
+        same = [r for r in self.open_signals() if risk_group(r["symbol"]) == grp]
+        if len(same) >= cfg.get("max_per_sector", 99):
+            return f"sector cap: already {len(same)} open position(s) in {grp}"
+        return None
+
     def on_trigger(self, ev, sel, plan, explanation, now, mode="LIVE") -> dict:
         lvl = ev["trigger"]["level"]
         dup = self.duplicate_reason(ev["symbol"], ev["direction"], lvl, now)
         if dup:
             return {"created": False, "reason": dup}
+        cap = self.cap_reason(ev["symbol"], now)
+        if cap:
+            return {"created": False, "reason": cap}
         ok, why = self.can_take(plan, now)
         if not ok:
             day = now.astimezone(IST).date().isoformat()
@@ -142,8 +163,9 @@ class SignalManager:
              lvl, _now_s(now), _now_s(now), json.dumps(plan), json.dumps(explanation), json.dumps(ev),
              json.dumps({k: v for k, v in sel.items() if k != "candidates"} | {"candidates": sel["candidates"]}),
              mode, plan["qty"], plan["qty"], plan["sl_premium"]))
-        title = (f"BUY {plan['tradingsymbol']} | "
-                 f"{ev['symbol']} {plan['direction']} | Score {ev['score']:g}/10")
+        g = ev.get("grade")
+        title = (f"{'[' + g + '] ' if g else ''}BUY {plan['tradingsymbol']} | "
+                 f"{ev['symbol']} {plan['direction']} | Score {ev['score']:g}/{ev.get('max_score', 10)}")
         body = (f"Entry {plan['entry_range'][0]}-{plan['entry_range'][1]} | SL {plan['sl_premium']} | "
                 f"T1 {plan['t1_premium']} | T2 {plan['t2_premium']} | {plan['lots']} lot(s), "
                 f"max loss Rs {plan['max_loss']:,.0f}")
@@ -194,6 +216,11 @@ class SignalManager:
                 if r["t1_done"]:
                     reason += " (after T1, stop moved to cost)"
                 self._exit(r, now, r["remaining_qty"], px, reason, final=final)
+            elif (bid is not None and not r["t1_done"] and cfg.get("time_stop_minutes") and r["filled_at"]
+                  and (now - dt.datetime.fromisoformat(r["filled_at"])).total_seconds() >= cfg["time_stop_minutes"] * 60
+                  and bid < r["fill_price"] + cfg["time_stop_r"] * (r["fill_price"] - p["sl_premium"])):
+                self._exit(r, now, r["remaining_qty"], exit_px,
+                           f"Time stop: no +{cfg['time_stop_r']}R move in {cfg['time_stop_minutes']} min", final="EXPIRED")
             elif bid is not None and bid >= p["t2_premium"]:
                 self._exit(r, now, r["remaining_qty"], exit_px, "Target 2 hit", final="TARGET_HIT")
             elif bid is not None and bid >= p["t1_premium"] and not r["t1_done"]:

@@ -109,7 +109,10 @@ fun SignalCard(s: JSONObject, onClick: () -> Unit) {
     Card(border = if (bull) Up.copy(alpha = 0.6f) else Dn.copy(alpha = 0.6f), onClick = onClick) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(s.optString("symbol"), fontWeight = FontWeight.Bold, fontSize = 16.sp, modifier = Modifier.weight(1f))
-            Pill("${s.optString("status")} · ${n(s.dbl("score"), 1)}/10", statusColor(s.optString("status")))
+            val g = s.optString("confidence")
+            if (g == "A+" || g == "A" || g == "B") Pill(g, if (g == "B") Warn else Up)
+            Spacer(Modifier.width(6.dp))
+            Pill("${s.optString("status")} · ${n(s.dbl("score"), 0)}", statusColor(s.optString("status")))
         }
         Text("${if (bull) "BUY CE" else "BUY PE"} · ${s.optString("tradingsymbol")} · Exp ${s.optString("expiry")}",
             color = if (bull) Up else Dn, fontSize = 13.sp)
@@ -138,7 +141,8 @@ fun SetupRow(x: JSONObject, onClick: () -> Unit) {
             }
             Column(horizontalAlignment = Alignment.End) {
                 Text("${signed(m.dbl("chg_pct"))}%", color = col(m.dbl("chg_pct")), fontWeight = FontWeight.SemiBold)
-                Pill("${x.optString("status")} · ${n(x.dbl("score"), 1)}", statusColor(x.optString("status")))
+                val stage = when (x.optString("stage")) { "STAGE2" -> "Stage 2 · pullback"; "STAGE1" -> "Stage 1 · strong"; "STAGE3" -> "Trigger"; else -> x.optString("status") }
+                Pill("$stage · ${n(x.dbl("score"), 0)}", statusColor(if (x.optString("stage") == "STAGE2") "READY" else x.optString("status")))
             }
         }
         Text("RVOL ${n(m.dbl("rvol"))}x · ${m.str("buildup") ?: "OI n/a"} · VWAP ${n(m.dbl("vwap"))}", color = Mut, fontSize = 12.sp)

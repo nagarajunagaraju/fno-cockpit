@@ -18,6 +18,8 @@ from .config import IST, merged
 from .contracts import pick_expiry, select_contract
 from .layers import evaluate, prescore
 from .planner import build_plan, explain
+from .pullback import contract_points, evaluate_pullback, grade as grade_of
+from .regime import detect as detect_regime
 from .signals import SignalManager
 
 log = logging.getLogger("cockpit.scanner")
@@ -155,6 +157,8 @@ class Scanner:
             if s.get("hv20") is None and s.get("daily_closes"):
                 s["hv20"] = options.hist_vol(s["daily_closes"])
         market = self.feed.market(stocks)
+        if cfg.get("strategy") == "pullback":
+            return self._cycle_pullback(cfg, now, stocks, market)
         evals = []
         by_sym = {s["symbol"]: s for s in stocks}
         for s in stocks:
@@ -201,9 +205,113 @@ class Scanner:
             "trigger_log": self.trigger_log[-30:], "cycle_ms": self.cycle_ms,
         }
 
+    # ================================================================ v3: pullback strategy
+    def _cycle_pullback(self, cfg, now, stocks, market):
+        regime = detect_regime(market, cfg)
+        by_sym = {s["symbol"]: s for s in stocks}
+        final = {s["symbol"]: evaluate_pullback(s, market, regime, cfg, now, None) for s in stocks}
+        cands = [e for e in final.values() if e["status"] in ("TRIGGER", "WATCHING") and e.get("stage") in ("STAGE2", "STAGE3")
+                 and e["pre_score"] >= 35]
+        cands.sort(key=lambda e: (e["status"] != "TRIGGER", -e["pre_score"]))
+        oinfos = {}
+        for e in cands[:8]:
+            st = by_sym[e["symbol"]]
+            oc = self.tracker.chain(st, now)
+            oinfos[e["symbol"]] = oc["info"]
+            final[e["symbol"]] = evaluate_pullback(st, market, regime, cfg, now, oc["info"])
+        for ev in final.values():
+            if ev["status"] == "TRIGGER":
+                key = (ev["symbol"], ev["direction"], ev["trigger"]["bar_time"], now.date())
+                if key in self.processed:
+                    continue
+                self.processed.add(key)
+                self._on_trigger_pullback(ev, by_sym[ev["symbol"]], oinfos.get(ev["symbol"]), regime, cfg, now)
+
+        open_sigs = self.manager.open_signals()
+        if open_sigs:
+            q = self.feed.option_quotes([r["plan"]["tradingsymbol"] for r in open_sigs])
+            spot = {s["symbol"]: s["bars"][-1]["c"] for s in stocks if s.get("bars")}
+            self.manager.update(now, q, spot)
+
+        ordered = sorted(final.values(), key=lambda e: (-e["pre_score"], e["symbol"]))
+        slim = [self._slim(e) for e in ordered]
+        live_states = ("TRIGGER", "WATCHING")
+        self.snapshot = {
+            "status": "running", "mode": self.feed.mode, "strategy": "pullback",
+            "updated": now.isoformat(timespec="seconds"), "regime": regime,
+            "market": {k: market.get(k) for k in ("nifty", "banknifty", "breadth", "vix")},
+            "universe": len(stocks), "evaluated": len(final), "option_checked": len(oinfos),
+            "alerts_today": self.manager.daily_count(now), "max_alerts": cfg["max_alerts_per_day"],
+            "bullish": [x for x in slim if x["direction"] == "BULL" and x["status"] in live_states][:25],
+            "bearish": [x for x in slim if x["direction"] == "BEAR" and x["status"] in live_states][:25],
+            "rejected": [x for x in slim if x["status"] == "REJECTED"][:60],
+            "counts": {"TRIGGER": sum(1 for x in slim if x["status"] == "TRIGGER"),
+                       "STAGE2": sum(1 for x in slim if x.get("stage") == "STAGE2"),
+                       "STAGE1": sum(1 for x in slim if x.get("stage") == "STAGE1" and x["status"] == "WATCHING"),
+                       "REJECTED": sum(1 for x in slim if x["status"] == "REJECTED"),
+                       "NO_SETUP": sum(1 for x in slim if x["status"] == "NO_SETUP"),
+                       "READY": sum(1 for x in slim if x.get("stage") == "STAGE2"),
+                       "WATCHING": sum(1 for x in slim if x["status"] == "WATCHING")},
+            "full": {e["symbol"]: e for e in ordered if e["status"] in ("TRIGGER", "WATCHING", "REJECTED")},
+            "trigger_log": self.trigger_log[-30:], "cycle_ms": self.cycle_ms,
+        }
+
+    def _on_trigger_pullback(self, ev, stock, oinfo, regime, cfg, now):
+        rec = {"time": now.isoformat(timespec="seconds"), "symbol": ev["symbol"], "direction": ev["direction"],
+               "score": ev["pre_score"]}
+        try:
+            oc = self.tracker.chain(stock, now, max_age=10)
+            ch = oc.get("chain")
+            if not ch:
+                rec["result"] = f"rejected: {oc['info'].get('reason')}"
+                return
+            sel = select_contract(ch, ev["direction"], cfg)
+            if not sel.get("selected"):
+                rec["result"] = f"rejected: {sel.get('error')}"
+                return
+            plan = build_plan(ev, sel, ch, cfg, now, levels=ev["levels"])
+            if "error" in plan:
+                rec["result"] = f"rejected: {plan['error']}"
+                return
+            pts = contract_points(ev, sel, plan, ch, stock, cfg)
+            bad = [c for c in ev["checks"] if c["layer"] == 4 and c["mandatory"] and c["passed"] is False]
+            if bad:
+                rec["result"] = f"rejected: {bad[0]['label']} {bad[0]['value']}"
+                return
+            score = round(ev["pre_score"] + pts, 1)
+            g = grade_of(score, regime, cfg)
+            rec["score"] = score
+            if g is None:
+                rec["result"] = f"score {score:g}/100 below {cfg['grade_b_min']}"
+                return
+            if g == "B":
+                after = now.astimezone(IST).time() >= dt.datetime.strptime(cfg["b_grade_time"], "%H:%M").time()
+                if not after or self.manager.daily_count(now) > 0:
+                    rec["result"] = (f"B grade ({score:g}) held: B backup only after {cfg['b_grade_time']} "
+                                     "on a day with no A alerts")
+                    return
+            ev["score"], ev["grade"], ev["max_score"] = score, g, 100
+            plan.update(score=score, max_score=100, confidence=g, grade=g, strategy="pullback",
+                        regime=regime.get("regime"))
+            if g == "B":
+                plan["plan_notes"] = plan.get("plan_notes", []) + ["B grade backup: consider half size"]
+            exp = explain(ev, sel, plan, oinfo)
+            exp["why_stock"] = (f"[{g}] {ev['symbol']} {ev['metrics']['chg_pct']:+.2f}% with RVOL "
+                                f"{ev['metrics'].get('rvol')}x and {ev['metrics'].get('buildup')}; pulled back to VWAP "
+                                f"and turned. NIFTY regime {regime.get('regime')}. Score {score:g}/100.")
+            r = self.manager.on_trigger(ev, sel, plan, exp, now, mode=self.feed.mode)
+            rec["result"] = f"signal #{r['id']} [{g}]" if r["created"] else f"not sent: {r['reason']}"
+        except Exception as e:
+            rec["result"] = f"error: {e}"
+            log.error("pullback trigger %s failed: %s\n%s", ev["symbol"], e, traceback.format_exc())
+        finally:
+            log.info("trigger %s %s -> %s", ev["symbol"], ev["direction"], rec.get("result"))
+            self.trigger_log.append(rec)
+
     @staticmethod
     def _slim(e):
         return {"symbol": e["symbol"], "direction": e["direction"], "status": e["status"], "score": e["score"],
+                "stage": e.get("stage"), "grade": e.get("grade"),
                 "sector": e["sector"], "metrics": e["metrics"], "wait_reason": e.get("wait_reason"),
                 "reject_reasons": e["reject_reasons"][:3], "missing": (e.get("missing") or [])[:3],
                 "trigger": e.get("trigger")}

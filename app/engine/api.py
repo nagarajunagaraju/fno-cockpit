@@ -14,7 +14,7 @@ from .backtest import run_backtest
 from .config import DEFAULTS, IST
 from .scanner import get_cfg, save_cfg
 
-VERSION = "2.0.0"
+VERSION = "3.0.0"
 router = APIRouter(prefix="/api/engine")
 CTX: dict = {"scanner": None, "feed": None, "started": time.time(), "singleton": None}
 BT: dict = {"running": False, "progress": {}, "error": None}
@@ -132,15 +132,27 @@ def config_set(new: dict):
 
 
 class BacktestIn(BaseModel):
-    days: int = 30
+    days: int = 120
     symbols: list[str] | None = None
-    cost_pct: float = 0.05
+    cost_pct: float = 0.20
 
 
 def _bt_job(p: BacktestIn):
     try:
         BT.update(running=True, error=None, progress={"stage": "downloading data", "done": 0, "total": 0})
         feed = CTX["feed"]
+        cfg = get_cfg()
+        if cfg.get("strategy") == "pullback":
+            from .backtest_pullback import run as run_pb
+            src = feed.backtest_source(p.days, BT["progress"])
+            if not src["symbols"]:
+                raise RuntimeError("no historical data downloaded: " + "; ".join(src["notes"][:3]))
+            res = run_pb(src["symbols"], src["loader"], src["indices"], cfg, days=p.days, cost_pct=p.cost_pct,
+                         progress=BT["progress"], source=src["source"], notes=src["notes"])
+            res["created_at"] = dt.datetime.now(IST).isoformat(timespec="seconds")
+            store.x("INSERT INTO backtests(created_at, params, result) VALUES(?,?,?)",
+                    (res["created_at"], p.model_dump_json(), json.dumps(res)))
+            return
         cache = store.DATA / "cache" / f"bt_{dt.date.today()}_{p.days}_{'all' if not p.symbols else len(p.symbols)}_{feed.mode}.json"
         if cache.exists():
             ds = json.loads(cache.read_text())
@@ -162,8 +174,8 @@ def _bt_job(p: BacktestIn):
 def backtest_start(p: BacktestIn):
     if BT["running"]:
         raise HTTPException(409, "A backtest is already running")
-    if not 5 <= p.days <= 120:
-        raise HTTPException(400, "days must be 5..120")
+    if not 5 <= p.days <= 180:
+        raise HTTPException(400, "days must be 5..180")
     if CTX["feed"] is None or not CTX["feed"].ready():
         raise HTTPException(503, "Market data feed not ready (login first)")
     threading.Thread(target=_bt_job, args=(p,), daemon=True).start()

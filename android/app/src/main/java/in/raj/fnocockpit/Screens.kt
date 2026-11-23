@@ -235,7 +235,7 @@ fun HistoryScreen(api: Api, go: (Screen) -> Unit) {
 @Composable
 fun BacktestScreen(api: Api) {
     val scope = rememberCoroutineScope()
-    var days by remember { mutableStateOf("30") }
+    var days by remember { mutableStateOf("120") }
     var msg by remember { mutableStateOf<String?>(null) }
     val (b, err) = poll(4000) { api.obj("/api/engine/backtest") }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -246,7 +246,7 @@ fun BacktestScreen(api: Api) {
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.width(110.dp))
                 Button(enabled = b?.optBoolean("running") != true, onClick = {
                     scope.launch {
-                        msg = try { api.post("/api/engine/backtest", JSONObject().put("days", days.toIntOrNull() ?: 30)); "Started" } catch (e: Exception) { e.message }
+                        msg = try { api.post("/api/engine/backtest", JSONObject().put("days", days.toIntOrNull() ?: 120)); "Started" } catch (e: Exception) { e.message }
                     }
                 }) { Text(if (b?.optBoolean("running") == true) "Running…" else "Run backtest") }
             }
@@ -268,7 +268,7 @@ fun BacktestScreen(api: Api) {
             }
         }
         item { Card { Text("Important notes", fontWeight = FontWeight.SemiBold, color = Warn); Bullets(r.optJSONArray("notes").strs()) } }
-        listOf("by_hour" to "By time of day (hour)", "by_score" to "By signal score", "by_side" to "CE vs PE", "by_symbol" to "By stock").forEach { (k, t) ->
+        listOf("by_hour" to "By time of day (hour)", "by_score" to "By grade / score", "by_regime" to "By market regime", "by_side" to "CE vs PE", "by_symbol" to "By stock").forEach { (k, t) ->
             val g = s.optJSONObject(k) ?: return@forEach
             item {
                 Card {

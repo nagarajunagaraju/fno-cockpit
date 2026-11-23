@@ -10,8 +10,8 @@ DEFAULTS: dict = {
     # ---- session timing (IST) -------------------------------------------
     "market_open": "09:15",
     "market_close": "15:30",
-    "opening_range_minutes": 10,      # no entry trigger before 09:25 (first 10 min = opening range)
-    "last_entry_time": "14:45",       # no new signals after this
+    "opening_range_minutes": 15,      # opening range 09:15-09:30
+    "last_entry_time": "13:30",       # no new signals after this
     "square_off_time": "15:15",       # paper positions closed at this time
 
     # ---- layer 1: market / sector ----------------------------------------
@@ -46,13 +46,13 @@ DEFAULTS: dict = {
     "watch_min_score": 5,
 
     # ---- contract selection ------------------------------------------------
-    "min_dte": 5,                     # skip expiry closer than this (days)
-    "strikes_each_side": 4,           # evaluate ATM +/- this many strikes
+    "min_dte": 7,                     # skip expiry closer than this (days)
+    "strikes_each_side": 3,           # evaluate ATM +/- this many strikes
     "target_delta": 0.55,
-    "min_delta": 0.35,
-    "max_delta": 0.80,
-    "max_spread_pct": 3.0,
-    "min_oi_lots": 50,
+    "min_delta": 0.45,
+    "max_delta": 0.65,
+    "max_spread_pct": 2.0,
+    "min_oi_lots": 100,
     "min_volume_lots": 20,
     "max_iv_premium_pct": 15.0,       # contract IV may exceed ATM IV by at most this %
     "max_iv_vs_ref": 1.5,             # ATM IV / reference IV above this = abnormal IV -> reject
@@ -64,19 +64,19 @@ DEFAULTS: dict = {
     "t2_r": 2.5,
     "sl_reprice_minutes": 30,         # premium SL = contract repriced at stop level after this time
     "target_reprice_minutes": 60,
-    "min_premium_sl_pct": 8.0,        # premium SL never tighter than this (noise)
+    "min_premium_sl_pct": 10.0,        # premium SL never tighter than this (noise)
     "max_premium_sl_pct": 45.0,       # premium SL wider than this -> reject
-    "min_rr": 1.3,                    # premium reward:risk to T1
+    "min_rr": 1.5,                    # premium reward:risk to T1
     "entry_slippage_pct": 1.0,        # entry range upper bound above ask
 
     # ---- risk (paper by default) --------------------------------------------
     "capital": 300000,
     "risk_per_trade_pct": 1.0,
     "max_premium_pct": 10.0,
-    "max_daily_loss_pct": 2.0,
+    "max_daily_loss_pct": 1.5,
     "max_open_positions": 2,
     "max_exposure_pct": 25.0,
-    "max_signals_per_symbol_day": 2,
+    "max_signals_per_symbol_day": 1,
     "resignal_cooldown_min": 30,
 
     # ---- paper trading --------------------------------------------------------
@@ -92,8 +92,38 @@ DEFAULTS: dict = {
     "stamp_buy_pct": 0.003,
     "gst_pct": 18.0,
 
+    # ---- v3 pullback strategy ("strong stock, first pullback") ----------------------
+    "strategy": "pullback",
+    "universe_top_n": 40,             # only the 40 most liquid F&O stocks (20-day turnover)
+    "pb_first_entry": "09:45",        # stage 3 triggers from here
+    "pb_chg_min": 1.0,                # stage 1: stock move vs prev close (%)
+    "pb_chg_max": 3.0,
+    "pb_rvol_min": 1.5,               # stage 1 hard minimum (full points at 2x)
+    "pb_min_impulse_pct": 0.8,        # impulse: day open -> day extreme
+    "pb_vwap_touch_pct": 0.3,         # stage 2: pullback low within this % of VWAP
+    "pb_vwap_break_pct": 0.15,        # stage 2: no 5-min close beyond VWAP by more than this
+    "pb_min_pullback_bars": 2,        # at least 2 five-minute bars of pullback
+    "pb_trigger_vol_mult": 1.2,       # trigger 5-min volume vs avg pullback 5-min volume
+    "pb_sl_buffer_pct": 0.1,
+    "pb_min_sl_pct": 0.4,
+    "pb_max_sl_pct": 1.5,
+    "pb_t2_r": 2.5,
+    "grade_a_min": 75,                # A: alert
+    "grade_aplus_min": 85,            # A+: priority alert
+    "grade_b_min": 65,                # B: one backup alert after b_grade_time if no A today
+    "b_grade_time": "11:30",
+    "max_alerts_per_day": 3,
+    "max_per_sector": 1,
+    "time_stop_minutes": 30,
+    "time_stop_r": 0.5,
+    "regime_strong_pct": 0.4,
+    "regime_sideways_pct": 0.25,
+    "vix_spike_pct": 8.0,
+    "max_ivhv_ratio": 1.4,
+    "require_websocket": True,        # no new signals while running on REST fallback
+
     # ---- data health ------------------------------------------------------------
-    "stale_seconds": 20,
+    "stale_seconds": 10,
     "scan_interval_seconds": 5,
 }
 

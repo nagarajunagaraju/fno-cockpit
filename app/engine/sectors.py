@@ -60,3 +60,13 @@ def sector_of(symbol: str) -> str:
 
 def sector_indices() -> list[str]:
     return sorted(set(SECTOR_OF.values()) | {INDEX_NIFTY, INDEX_BANKNIFTY})
+
+
+_GROUPS_CAP = {"NIFTY BANK": "FINANCIALS", "NIFTY PSU BANK": "FINANCIALS", "NIFTY FIN SERVICE": "FINANCIALS",
+               "NIFTY PHARMA": "HEALTH", "NIFTY HEALTHCARE": "HEALTH"}
+
+
+def risk_group(symbol: str) -> str:
+    """Correlated bucket for the sector cap (banks + financials count as one bet)."""
+    s = sector_of(symbol)
+    return _GROUPS_CAP.get(s, s)

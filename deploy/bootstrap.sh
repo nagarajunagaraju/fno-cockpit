@@ -10,20 +10,37 @@ SRC=/root/fno-cockpit-src
 APP=/opt/fno-cockpit
 
 [ "$(id -u)" = 0 ] || { echo "Run with sudo"; exit 1; }
-apt-get update -y -qq && apt-get install -y -qq git curl >/dev/null
+AUTO=0; [ "${1:-}" = "--auto" ] && { AUTO=1; shift; }
+command -v git >/dev/null || { apt-get update -y -qq && apt-get install -y -qq git curl >/dev/null; }
 
-if [ -d "$SRC/.git" ]; then git -C "$SRC" pull -q; else git clone -q "$REPO" "$SRC"; fi
+BEFORE=""
+if [ -d "$SRC/.git" ]; then BEFORE=$(git -C "$SRC" rev-parse HEAD); git -C "$SRC" pull -q; else git clone -q "$REPO" "$SRC"; fi
+AFTER=$(git -C "$SRC" rev-parse HEAD)
+
+install_autoupdate() {
+  # Weekdays 08:20 IST: pull the latest code from GitHub and restart only if something changed.
+  cp "$SRC/deploy/fno-cockpit-autoupdate.service" "$SRC/deploy/fno-cockpit-autoupdate.timer" /etc/systemd/system/
+  systemctl daemon-reload
+  systemctl enable --now fno-cockpit-autoupdate.timer >/dev/null 2>&1 || true
+}
 
 if [ -f "$APP/config.json" ] && [ -f /etc/caddy/Caddyfile ] && grep -q reverse_proxy /etc/caddy/Caddyfile; then
-  echo "==> Existing install found: updating code only"
-  bash "$SRC/deploy/update_vps.sh"
+  install_autoupdate
   HOST=$(head -1 /etc/caddy/Caddyfile | awk '{print $1}')
+  if [ "$AUTO" = 1 ] && [ "$BEFORE" = "$AFTER" ]; then
+    echo "Already up to date ($AFTER)"; exit 0
+  fi
+  echo "==> Existing install found: updating code to ${AFTER:0:7}"
+  bash "$SRC/deploy/update_vps.sh"
+  [ "$AUTO" = 1 ] && exit 0
 else
   IP=$(curl -fsS https://checkip.amazonaws.com || curl -fsS https://api.ipify.org)
   IP=$(echo "$IP" | tr -d '[:space:]')
   HOST="${1:-${IP//./-}.sslip.io}"
   echo "==> Installing for https://$HOST"
+  [ "$AUTO" = 1 ] && { echo "Not installed yet; run interactively first"; exit 1; }
   bash "$SRC/deploy/install_vps.sh" "$HOST"
+  install_autoupdate
 
   echo
   echo "Paste your NEW Kite Connect details (input is not shown on screen for the secret)."

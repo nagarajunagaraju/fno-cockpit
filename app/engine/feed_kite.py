@@ -49,7 +49,11 @@ class KiteFeed:
                       "rest_fallback": False, "errors": [], "baseline_loaded": 0, "universe": 0,
                       "ticks": 0, "rest_polls": 0}
         self.ticker = None
+        self._ticker_token_version = None
         self._prepared = False
+        self.idx_bars: dict[str, BarBuilder] = {}
+        self.fut_hist: dict[str, list] = {}         # symbol -> [(minute, oi, ltp)] last ~20 min
+        self.turnover_rank: dict[str, int] = {}
         threading.Thread(target=self._run, daemon=True, name="kite-feed").start()
 
     # ------------------------------------------------------------ helpers
@@ -82,9 +86,12 @@ class KiteFeed:
                     today = ist_now().date().isoformat()
                     if self.day != today:
                         self._prepare(today)
+                    elif self._ticker_token_version != getattr(self.src, "token_version", 0):
+                        self._err("new Kite login detected: reconnecting WebSocket with the new token")
+                        self._start_ticker()
                     if self.market_open_now():
                         self._maybe_rest_poll()
-                    for b in self.cash.values():
+                    for b in list(self.cash.values()) + list(self.idx_bars.values()):
                         b.flush(ist_now())
             except Exception as e:  # never let the feed thread die
                 self._err(f"feed loop: {e}")
@@ -98,7 +105,7 @@ class KiteFeed:
         self.state["universe"] = len(universe)
         nse = kite.instruments("NSE")
         idx_tokens = {i["tradingsymbol"]: i["instrument_token"] for i in nse if i.get("segment") == "INDICES"}
-        wanted = sector_indices()
+        wanted = sector_indices() + ["INDIA VIX"]
         missing = [w for w in wanted if w not in idx_tokens]
         if missing:
             self._err(f"index not found on Kite, marked unavailable: {', '.join(missing)}")
@@ -111,6 +118,8 @@ class KiteFeed:
             for name in wanted:
                 if name in idx_tokens:
                     self.tok2[idx_tokens[name]] = ("idx", name)
+            self.idx_bars = {INDEX_NIFTY: BarBuilder(cfg)}
+            self._rank_turnover()
 
         cache_file = CACHE / f"minute_{today}.json"
         cached = json.loads(cache_file.read_text()) if cache_file.exists() else {}
@@ -165,15 +174,35 @@ class KiteFeed:
                 self._err(f"circuit limits: {e}")
 
     # ------------------------------------------------------------ websocket
+    def _rank_turnover(self):
+        """20-day average cash turnover (close x volume) rank: 1 = most liquid."""
+        tv = {}
+        for u in self.src.universe:
+            c = (self.src.history.get(u["symbol"]) or {}).get("candles") or []
+            last = [x for x in c[-20:] if x.get("volume")]
+            if last:
+                tv[u["symbol"]] = sum(x["close"] * x["volume"] for x in last) / len(last)
+        self.turnover_rank = {s: i + 1 for i, s in enumerate(sorted(tv, key=lambda k: -tv[k]))}
+
+    def _stop_old_ticker(self):
+        old = self.ticker
+        self.ticker = None
+        if old is None:
+            return
+        try:
+            from twisted.internet import reactor
+            old.on_close = old.on_error = old.on_reconnect = old.on_noreconnect = None
+            old.on_ticks = None
+            reactor.callFromThread(old.stop_retry)
+            reactor.callFromThread(old.close)
+        except Exception as e:
+            self._err(f"closing old WebSocket: {e}")
+
     def _start_ticker(self):
-        if self.ticker is not None:
-            try:  # re-subscribe the existing connection (reactor can't be restarted in-process)
-                toks = list(self.tok2)
-                self.ticker.subscribe(toks)
-                self.ticker.set_mode(self.ticker.MODE_FULL, toks)
-                return
-            except Exception as e:
-                self._err(f"resubscribe: {e}")
+        """(Re)connects KiteTicker with the CURRENT access token. Called after preparation and
+        whenever a new Kite login happens, so no server reboot is needed after re-login."""
+        self._stop_old_ticker()
+        self._ticker_token_version = getattr(self.src, "token_version", 0)
         try:
             from kiteconnect import KiteTicker
         except Exception as e:
@@ -193,6 +222,8 @@ class KiteFeed:
 
         def on_error(ws, code, reason):
             self._err(f"ticker error {code} {reason}")
+            if "403" in str(code) or "403" in str(reason) or "TokenException" in str(reason):
+                self.src.mark_logged_out()
 
         def on_reconnect(ws, attempts):
             self.state["ticker"] = f"reconnecting (attempt {attempts})"
@@ -200,7 +231,7 @@ class KiteFeed:
         def on_noreconnect(ws):
             self.state["ticker"] = "gave up reconnecting - REST fallback"
 
-        kws.on_ticks = lambda ws, ticks: self.on_ticks(ticks)
+        kws.on_ticks = lambda ws, ticks: self.on_ticks(ticks) if self.ticker is kws else None
         kws.on_connect = on_connect
         kws.on_close = on_close
         kws.on_error = on_error
@@ -233,9 +264,22 @@ class KiteFeed:
                                "volume": t.get("volume_traded", t.get("volume")), "ts": now}
         elif kind == "fut":
             self.fut[name] = {"ltp": t.get("last_price"), "prev_close": ohlc.get("close"), "oi": t.get("oi"),
-                              "volume": t.get("volume_traded", t.get("volume")), "ts": now}
+                              "volume": t.get("volume_traded", t.get("volume")), "ts": now,
+                              "bq": t.get("total_buy_quantity", t.get("buy_quantity")),
+                              "sq": t.get("total_sell_quantity", t.get("sell_quantity"))}
+            m = minute_index(ts, self.cfg()) if isinstance(ts, dt.datetime) else None
+            if m is not None and m >= 0 and t.get("oi"):
+                h = self.fut_hist.setdefault(name, [])
+                if not h or h[-1][0] != m:
+                    h.append((m, t.get("oi"), t.get("last_price")))
+                    del h[:-16]
+                else:
+                    h[-1] = (m, t.get("oi"), t.get("last_price"))
         else:
-            self.idx[name] = {"ltp": t.get("last_price"), "prev_close": ohlc.get("close"), "ts": now}
+            self.idx[name] = {"ltp": t.get("last_price"), "prev_close": ohlc.get("close"), "open": ohlc.get("open"),
+                              "ts": now}
+            if name in self.idx_bars and isinstance(ts, dt.datetime):
+                self.idx_bars[name].on_tick(ts, t.get("last_price"))
 
     def _maybe_rest_poll(self):
         lt = self.state["last_tick"]
@@ -297,6 +341,8 @@ class KiteFeed:
                 "fut": {"ltp": f.get("ltp"), "prev_close": f.get("prev_close"), "oi": f.get("oi"),
                         "prev_oi": h.get("prev_oi")} if f else None,
                 "data_ts": last_ts, "daily_closes": [c["close"] for c in daily[-60:]],
+                "turnover_rank": self.turnover_rank.get(sym), "fut_bq": f.get("bq"), "fut_sq": f.get("sq"),
+                "fut_hist": list(self.fut_hist.get(sym, [])),
             })
         return out
 
@@ -307,8 +353,18 @@ class KiteFeed:
             if s.get("ltp") and s.get("prev_close"):
                 adv += s["ltp"] > s["prev_close"]
                 dec += s["ltp"] < s["prev_close"]
-        return {"nifty": idx.get(INDEX_NIFTY), "banknifty": idx.get(INDEX_BANKNIFTY),
-                "sectors": idx, "breadth": {"adv": adv, "dec": dec} if stocks else {}}
+        nifty = dict(idx.get(INDEX_NIFTY) or {})
+        nb = self.idx_bars.get(INDEX_NIFTY)
+        if nb:
+            bars = nb.completed()
+            orb = [b for b in bars if b["m"] < self.cfg()["opening_range_minutes"]]
+            if len(orb) >= self.cfg()["opening_range_minutes"] - 2:
+                nifty["or_high"] = max(b["h"] for b in orb)
+                nifty["or_low"] = min(b["l"] for b in orb)
+        nifty["day_open"] = nifty.get("open")
+        return {"nifty": nifty or None, "banknifty": idx.get(INDEX_BANKNIFTY), "vix": idx.get("INDIA VIX"),
+                "sectors": idx, "breadth": {"adv": adv, "dec": dec} if stocks else {},
+                "feed_degraded": bool(self.state.get("rest_fallback"))}
 
     # ------------------------------------------------------------ options
     def expiries(self, symbol):
@@ -348,7 +404,82 @@ class KiteFeed:
                          "candles": h["candles"]})
         return rows
 
-    # ------------------------------------------------------------ backtest data
+    # ------------------------------------------------------------ backtest data (v3, chunked, on disk)
+    def backtest_source(self, days: int, progress: dict) -> dict:
+        cfg = self.cfg()
+        kite = self.src.kite
+        end = ist_now().date() - dt.timedelta(days=1)
+        start = end - dt.timedelta(days=int(days * 1.5) + 25)
+        folder = CACHE / f"bt3_{end.isoformat()}_{days}"
+        folder.mkdir(exist_ok=True)
+        ranked = sorted(self.src.universe, key=lambda u: self.turnover_rank.get(u["symbol"], 9999))
+        uni = ranked[:cfg["universe_top_n"]]
+        idx_tokens = {name: tok for tok, (k, name) in self.tok2.items() if k == "idx" and name != "INDIA VIX"}
+        need_idx = {INDEX_NIFTY} | {sector_of(u["symbol"]) for u in uni}
+        progress.update(stage="downloading 1-min history", total=len(uni) + len(need_idx), done=0)
+
+        def chunks():
+            a = start
+            while a <= end:
+                b = min(end, a + dt.timedelta(days=55))
+                yield a, b
+                a = b + dt.timedelta(days=1)
+
+        def minute(token, oi=False):
+            out = {}
+            for a, b in chunks():
+                for c in kite.historical_data(token, a, b, "minute", oi=oi):
+                    d = c["date"]
+                    d = d.replace(tzinfo=IST) if d.tzinfo is None else d.astimezone(IST)
+                    m = minute_index(d, cfg)
+                    if m < 0:
+                        continue
+                    bar = {"m": m, "t": d.strftime("%H:%M"), "o": c["open"], "h": c["high"], "l": c["low"],
+                           "c": c["close"], "v": c.get("volume", 0)}
+                    if oi:
+                        bar["oi"] = c.get("oi")
+                    out.setdefault(d.date().isoformat(), []).append(bar)
+            return out
+
+        notes, indices = [], {}
+        for name in sorted(need_idx):
+            f = folder / f"idx_{name.replace(' ', '_')}.json"
+            try:
+                if f.exists():
+                    indices[name] = json.loads(f.read_text())
+                elif name in idx_tokens:
+                    indices[name] = {"minute": minute(idx_tokens[name])}
+                    f.write_text(json.dumps(indices[name]))
+            except Exception as e:
+                notes.append(f"index {name}: {e}")
+            progress["done"] += 1
+        syms = []
+        for u in uni:
+            sym = u["symbol"]
+            f = folder / f"{sym}.json"
+            try:
+                if not f.exists():
+                    try:
+                        fut = minute(u["fut_token"], oi=True)
+                    except Exception as e:
+                        fut = {}
+                        notes.append(f"{sym}: futures history unavailable ({e})")
+                    daily = kite.historical_data(u["cash_token"], start - dt.timedelta(days=60), end, "day")
+                    f.write_text(json.dumps({
+                        "lot_size": u["lot_size"], "minute": minute(u["cash_token"]), "fut_minute": fut,
+                        "daily": [{"date": c["date"].date().isoformat(), "open": c["open"], "high": c["high"],
+                                   "low": c["low"], "close": c["close"], "volume": c.get("volume", 0)} for c in daily]}))
+                syms.append(sym)
+            except Exception as e:
+                notes.append(f"{sym}: {e}")
+            progress["done"] += 1
+
+        def loader(sym, daily_only=False):
+            d = json.loads((folder / f"{sym}.json").read_text())
+            return {"daily": d["daily"]} if daily_only else d
+
+        return {"symbols": syms, "indices": indices, "loader": loader, "source": "KITE", "notes": notes}
+
     def backtest_dataset(self, days: int, symbols: list[str] | None, progress: dict) -> dict:
         """Downloads 1-min cash + futures(with OI) + index candles. Expired option contracts are not
         available from Kite, so the option layer cannot be backtested (reported clearly)."""

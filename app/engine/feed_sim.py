@@ -63,6 +63,12 @@ class SimFeed:
         regime = "up" if u < 0.10 else "down" if u < 0.20 else "mild_up" if u < 0.35 else "mild_down" if u < 0.5 else "chop"
         drift_total = {"up": r.uniform(1.6, 3.0), "down": -r.uniform(1.6, 3.0), "mild_up": r.uniform(0.3, 1.0),
                        "mild_down": -r.uniform(0.3, 1.0), "chop": r.uniform(-0.3, 0.3)}[regime] / 100
+        mr = random.Random(f"{self.seed}-market-{day.isoformat()}")
+        mkt = mr.choice([-1, 1]) * mr.uniform(0.3, 0.9) / 100      # market-wide drift of the day
+        if regime in ("up", "down") and (mkt > 0) != (regime == "up") and r.random() < 0.6:
+            regime = "up" if mkt > 0 else "down"                   # trending stocks mostly follow the market
+            drift_total = (1 if mkt > 0 else -1) * r.uniform(1.6, 3.0) / 100
+        drift_total += mkt * 0.8
         vol_mult = {"up": r.uniform(2.0, 3.2), "down": r.uniform(2.0, 3.2)}.get(regime, r.uniform(0.7, 1.3))
         oi_total = {"up": 0.06, "down": 0.06, "mild_up": 0.01, "mild_down": 0.01}.get(regime, r.uniform(-0.01, 0.01))
         gap = r.gauss(0, 0.002)
@@ -70,9 +76,17 @@ class SimFeed:
         o = prev_close * (1 + gap)
         bars, px, oi = [], o, prev_oi
         wsum = sum(_vol_weight(m) for m in range(N_MIN))
+        def path(mm):  # fraction of the day's drift reached by minute mm
+            if regime in ("up", "down"):   # impulse -> pullback towards VWAP -> trend resumes
+                if mm < 35:
+                    return 0.7 * (mm + 1) / 35
+                if mm < 60:
+                    return 0.7 - 0.38 * (mm - 34) / 25
+                return 0.32 + 0.68 * (mm - 59) / (N_MIN - 59)
+            return 1 - math.exp(-(mm + 1) / 90)
         for m in range(N_MIN):
-            shape = 1 - math.exp(-(m + 1) / 90)
-            step = drift_total * (shape - (1 - math.exp(-m / 90))) if m else drift_total * (1 - math.exp(-1 / 90))
+            shape = path(m)
+            step = drift_total * (shape - (path(m - 1) if m else 0.0))
             noise = r.gauss(0, 0.0009 if regime in ("up", "down") else 0.0012)
             if regime == "up" and m < 3:
                 noise = abs(noise)
@@ -87,7 +101,11 @@ class SimFeed:
                 elif regime == "down":
                     hi = px
             v = day_vol * vol_mult * _vol_weight(m) / wsum * r.uniform(0.6, 1.4)
-            oi = prev_oi * (1 + oi_total * shape + r.gauss(0, 0.001))
+            if regime in ("up", "down") and 35 <= m < 60:
+                v *= 0.55          # pullback on lighter volume
+            if regime in ("up", "down") and 60 <= m < 70:
+                v *= 1.6           # resumption with volume
+            oi = prev_oi * (1 + oi_total * min(1.0, (m + 1) / 120) + r.gauss(0, 0.001))
             bars.append({"m": m, "t": (dt.datetime(2000, 1, 1, 9, 15) + dt.timedelta(minutes=m)).strftime("%H:%M"),
                          "o": round(px, 2), "h": round(hi, 2), "l": round(lo, 2), "c": round(c, 2), "v": round(v),
                          "oi": round(oi)})
@@ -125,6 +143,7 @@ class SimFeed:
             self.data[u["symbol"]] = {"daily": daily[:-1], "today": sessions[today.isoformat()],
                                       "past": {k: v for k, v in sessions.items() if k != today.isoformat()}}
         self.rvol = {s: self._baseline(d["past"]) for s, d in self.data.items()}
+        self.rank = {u["symbol"]: i + 1 for i, u in enumerate(sorted(self.universe, key=lambda u: -u["base"] * u["lot_size"]))}
 
     @staticmethod
     def _baseline(past):
@@ -196,6 +215,10 @@ class SimFeed:
                 "fut": {"ltp": round(ltp * 1.002, 2), "prev_close": round(prev["close"] * 1.002, 2),
                         "oi": b["oi"], "prev_oi": prev_oi},
                 "data_ts": self.now().timestamp(), "daily_closes": [c["close"] for c in d["daily"][-60:]],
+                "turnover_rank": self.rank.get(s),
+                "fut_hist": [(x["m"], x["oi"], x["c"]) for x in bars[max(0, m - 15):m]],
+                "fut_bq": 1.5 if self._regime_sign(s) > 0 else (0.7 if self._regime_sign(s) < 0 else 1.0),
+                "fut_sq": 1.0,
             })
         return out
 
@@ -212,10 +235,22 @@ class SimFeed:
         for sec in {s["sector"] for s in stocks}:
             sectors[sec] = {"ltp": 1000 * (1 + self._index([s for s in stocks if s["sector"] == sec])), "prev_close": 1000}
         sectors[INDEX_BANKNIFTY] = {"ltp": 52000 * (1 + b), "prev_close": 52000}
-        sectors[INDEX_NIFTY] = {"ltp": 25100 * (1 + n), "prev_close": 25100}
+        sectors[INDEX_NIFTY] = {"ltp": 25100 * (1 + n), "prev_close": 25100, "open": 25100, "day_open": 25100}
+        mm = int(min(self.minute_float(), N_MIN - 1))
+        if mm >= 15:
+            key = (self.today, "or")
+            if getattr(self, "_or_cache", (None,))[0] != key:
+                levels = []
+                for k in range(15):
+                    rs = [st_bar_ret for st_bar_ret in
+                          ((self.data[u["symbol"]]["today"]["bars"][k]["c"] / self.data[u["symbol"]]["daily"][-1]["close"] - 1)
+                           for u in self.universe)]
+                    levels.append(25100 * (1 + sum(rs) / len(rs)))
+                self._or_cache = (key, max(levels), min(levels))
+            sectors[INDEX_NIFTY]["or_high"], sectors[INDEX_NIFTY]["or_low"] = self._or_cache[1], self._or_cache[2]
         adv = sum(1 for s in stocks if s["ltp"] > s["prev_close"])
         return {"nifty": sectors[INDEX_NIFTY], "banknifty": sectors[INDEX_BANKNIFTY], "sectors": sectors,
-                "breadth": {"adv": adv, "dec": len(stocks) - adv}}
+                "breadth": {"adv": adv, "dec": len(stocks) - adv}, "vix": None, "feed_degraded": False}
 
     # ------------------------------------------------------------ options
     def expiries(self, symbol):
@@ -313,6 +348,11 @@ class SimFeed:
         if progress is not None:
             progress.update(total=1, done=1)
         return ds
+
+    def backtest_source(self, days: int, progress=None):
+        ds = self.backtest_dataset(days, None, progress)
+        return {"symbols": list(ds["symbols"]), "indices": ds["indices"], "source": "SIMULATED",
+                "notes": ds["notes"], "loader": lambda sym, daily_only=False: ds["symbols"][sym]}
 
     @staticmethod
     def _composite(ds, pred):

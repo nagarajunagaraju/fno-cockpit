@@ -88,12 +88,25 @@ class AlertService : Service() {
                 updateStatus(prefs, "Server not reachable (${e.message?.take(60)}) · retry")
             }
             val sleepMs = when {
-                failures > 0 -> minOf(60_000L, 10_000L * failures)
+                failures > 0 && inWindow -> minOf(60_000L, 10_000L * failures)
                 inWindow -> 10_000L
-                else -> 300_000L
+                else -> {   // market closed: sleep until next weekday 09:00 IST (no polling, no battery use)
+                    val untilOpen = msUntilNextOpen()
+                    updateStatus(prefs, "Sleeping until next market day 09:00")
+                    untilOpen
+                }
             }
             try { Thread.sleep(sleepMs) } catch (_: InterruptedException) { }
         }
+    }
+
+    private fun msUntilNextOpen(): Long {
+        val zone = ZoneId.of("Asia/Kolkata")
+        val now = ZonedDateTime.now(zone)
+        var next = now.withHour(9).withMinute(0).withSecond(5).withNano(0)
+        if (!now.isBefore(next)) next = next.plusDays(1)
+        while (next.dayOfWeek == DayOfWeek.SATURDAY || next.dayOfWeek == DayOfWeek.SUNDAY) next = next.plusDays(1)
+        return java.time.Duration.between(now, next).toMillis().coerceAtLeast(60_000L)
     }
 
     private fun updateStatus(prefs: Prefs, s: String) {

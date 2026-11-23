@@ -205,12 +205,33 @@ class KiteSource:
         self._load_token()
 
     # ---- login -----------------------------------------------------
+    token_version = 0
+
+    @staticmethod
+    def _token_still_valid(data: dict) -> bool:
+        """Kite access tokens expire every morning (~06:00 IST). A token is reused only if it was
+        created after 06:00 IST today; older files (or files without a timestamp) need a fresh login."""
+        saved = data.get("saved_at")
+        if not saved:
+            return False
+        try:
+            t = dt.datetime.fromisoformat(saved)
+        except ValueError:
+            return False
+        ist = dt.timezone(dt.timedelta(hours=5, minutes=30))
+        now = dt.datetime.now(ist)
+        cutoff = now.replace(hour=6, minute=0, second=0, microsecond=0)
+        if now < cutoff:
+            cutoff -= dt.timedelta(days=1)
+        return t.astimezone(ist) >= cutoff
+
     def _load_token(self):
         if TOKEN_FILE.exists():
             data = json.loads(TOKEN_FILE.read_text())
-            if data.get("date") == dt.date.today().isoformat():
+            if self._token_still_valid(data):
                 self.kite.set_access_token(data["access_token"])
                 self._logged_in = True
+                self.token_version += 1
                 self._start_loader()
 
     def login_url(self):
@@ -219,10 +240,17 @@ class KiteSource:
     def complete_login(self, request_token: str):
         session = self.kite.generate_session(request_token, api_secret=self.api_secret)
         self.kite.set_access_token(session["access_token"])
+        ist = dt.timezone(dt.timedelta(hours=5, minutes=30))
         TOKEN_FILE.write_text(json.dumps({"date": dt.date.today().isoformat(),
+                                          "saved_at": dt.datetime.now(ist).isoformat(timespec="seconds"),
                                           "access_token": session["access_token"]}))
         self._logged_in = True
+        self.token_version += 1
         self._start_loader()
+
+    def mark_logged_out(self):
+        """Called when Kite rejects the token (expired / logged out elsewhere)."""
+        self._logged_in = False
 
     def logged_in(self):
         return self._logged_in
@@ -275,7 +303,7 @@ class KiteSource:
                     fut = self.kite.historical_data(u["fut_token"], today - dt.timedelta(days=10), today, "day", oi=True)
                     time.sleep(0.35)
                     candles = [{"date": c["date"].date().isoformat(), "open": c["open"], "high": c["high"],
-                                "low": c["low"], "close": c["close"]}
+                                "low": c["low"], "close": c["close"], "volume": c.get("volume", 0)}
                                for c in cash if c["date"].date() < today]
                     fut_done = [c for c in fut if c["date"].date() < today]
                     prev_oi = fut_done[-1]["oi"] if fut_done else None

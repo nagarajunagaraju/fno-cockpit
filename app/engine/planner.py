@@ -32,7 +32,7 @@ def underlying_levels(ev: dict, cfg: dict):
     return (px - up * dist, px + up * cfg["t1_r"] * dist, px + up * cfg["t2_r"] * dist, dist, note)
 
 
-def build_plan(ev: dict, sel: dict, chain: dict, cfg: dict, now: dt.datetime) -> dict:
+def build_plan(ev: dict, sel: dict, chain: dict, cfg: dict, now: dt.datetime, levels: dict | None = None) -> dict:
     up = 1 if ev["direction"] == "BULL" else -1
     m = ev["metrics"]
     leg = sel["selected"]
@@ -42,7 +42,11 @@ def build_plan(ev: dict, sel: dict, chain: dict, cfg: dict, now: dt.datetime) ->
     S = chain["spot"]
     px = m["price"]
 
-    u_sl, u_t1, u_t2, dist, note_sl = underlying_levels(ev, cfg)
+    if levels:   # strategy-defined structure levels (v3 pullback)
+        u_sl, u_t1, u_t2, dist, note_sl = levels["u_sl"], levels["u_t1"], levels["u_t2"], levels["risk"], levels["note"]
+        px = levels["entry"]
+    else:
+        u_sl, u_t1, u_t2, dist, note_sl = underlying_levels(ev, cfg)
     # ---- premium levels from the actual contract (IV, strike, expiry) ----
     ask, bid = leg["ask"], leg["bid"]
     entry = ask
@@ -57,7 +61,7 @@ def build_plan(ev: dict, sel: dict, chain: dict, cfg: dict, now: dt.datetime) ->
     p_sl, p_t1, p_t2 = premiums(u_sl, u_t1, u_t2)
     notes = [note_sl]
     sl_pct = (entry - p_sl) / entry * 100
-    if 0 < sl_pct < cfg["min_premium_sl_pct"]:
+    if 0 < sl_pct < cfg["min_premium_sl_pct"] and not levels:
         # premium stop would sit inside normal option noise: widen the UNDERLYING stop (and targets with it)
         scale = cfg["min_premium_sl_pct"] / sl_pct
         new_dist = min(dist * scale, px * cfg["max_u_sl_pct"] / 100)
@@ -70,6 +74,10 @@ def build_plan(ev: dict, sel: dict, chain: dict, cfg: dict, now: dt.datetime) ->
         if sl_pct < cfg["min_premium_sl_pct"]:
             p_sl = entry * (1 - cfg["min_premium_sl_pct"] / 100)
             notes.append(f"Premium SL set to the {cfg['min_premium_sl_pct']}% floor")
+    if levels and 0 < sl_pct < cfg["min_premium_sl_pct"]:
+        p_sl = entry * (1 - cfg["min_premium_sl_pct"] / 100)
+        notes.append(f"Premium SL set to the {cfg['min_premium_sl_pct']}% floor")
+        sl_pct = cfg["min_premium_sl_pct"]
     if sl_pct > cfg["max_premium_sl_pct"]:
         return {"error": f"Premium stop {sl_pct:.0f}% of entry > max {cfg['max_premium_sl_pct']}% - option too risky for this stop"}
     p_sl = max(0.05, p_sl)
@@ -97,7 +105,7 @@ def build_plan(ev: dict, sel: dict, chain: dict, cfg: dict, now: dt.datetime) ->
     charges = option_round_trip(entry_hi, p_sl, qty, cfg)
     max_loss = (entry_hi - p_sl) * qty + charges["total"]
     sc = ev["score"]
-    conf = "HIGH" if sc >= 9 else "GOOD" if sc >= 8 else "MODERATE"
+    conf = ev.get("grade") or ("HIGH" if sc >= 9 else "GOOD" if sc >= 8 else "MODERATE")
     return {
         "symbol": ev["symbol"], "direction": "BUY" if up > 0 else "SELL", "bias": ev["direction"],
         "option_type": kind, "tradingsymbol": leg["ts"], "strike": K, "expiry": chain["expiry"],

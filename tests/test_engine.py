@@ -235,8 +235,11 @@ def _fake_ev(sym="AAA", level=100.0):
             "checks": [], "metrics": {}}
 
 
+LOOSE = dict(CFG, max_alerts_per_day=99, max_per_sector=99, time_stop_minutes=0)
+
+
 def test_lifecycle_fill_t1_t2_and_events():
-    mgr = SignalManager(lambda: CFG)
+    mgr = SignalManager(lambda: LOOSE)
     now = dt.datetime.combine(DAY, dt.time(10, 0), IST)
     r = mgr.on_trigger(_fake_ev("LC1"), {"candidates": []}, _fake_plan("LC1CE"), {}, now)
     assert r["created"]
@@ -254,7 +257,7 @@ def test_lifecycle_fill_t1_t2_and_events():
 
 
 def test_missed_fill_and_invalidation():
-    mgr = SignalManager(lambda: CFG)
+    mgr = SignalManager(lambda: LOOSE)
     now = dt.datetime.combine(DAY, dt.time(11, 0), IST)
     a = mgr.on_trigger(_fake_ev("MF1"), {"candidates": []}, _fake_plan("MF1CE"), {}, now)["id"]
     mgr.update(now + dt.timedelta(minutes=4), {"MF1CE": {"bid": 11, "ask": 11.2}}, {"MF1": 100.5})
@@ -265,7 +268,7 @@ def test_missed_fill_and_invalidation():
 
 
 def test_risk_controls_block_new_signals():
-    cfg = dict(CFG, max_open_positions=1)
+    cfg = dict(LOOSE, max_open_positions=1)
     mgr = SignalManager(lambda: cfg)
     now = dt.datetime.combine(DAY, dt.time(12, 0), IST)
     assert mgr.on_trigger(_fake_ev("RK1"), {"candidates": []}, _fake_plan("RK1CE"), {}, now)["created"]
@@ -274,7 +277,7 @@ def test_risk_controls_block_new_signals():
 
 
 def test_daily_loss_lock():
-    cfg = dict(CFG, max_daily_loss_pct=0.1, max_open_positions=10)  # Rs 300 limit
+    cfg = dict(LOOSE, max_daily_loss_pct=0.1, max_open_positions=10)  # Rs 300 limit
     mgr = SignalManager(lambda: cfg)
     day = dt.date(2026, 11, 18)
     now = dt.datetime.combine(day, dt.time(10, 0), IST)
@@ -315,7 +318,8 @@ def test_sufficiency_flag():
 # ------------------------------------------------------------------ scanner integration (simulated session)
 def test_scanner_end_to_end_simulated_day():
     from app.engine.scanner import Scanner
-    feed = SimFeed(lambda: CFG, manual=True, day=DAY)
+    store.x("DELETE FROM signals WHERE day=?", (DAY.isoformat(),))   # isolate from earlier fake-signal tests
+    feed = SimFeed(lambda: CFG, manual=True, day=DAY)   # v3 pullback strategy (default)
     sc = Scanner(feed)
     for k in range(0, 200 * 4):
         feed.set_minute(k / 4)
@@ -356,3 +360,166 @@ def test_config_merge_types():
     c = merged({"min_score": "8", "require_vwap_side": "false", "weights": {"rvol": 3}, "junk": 1})
     assert c["min_score"] == 8 and c["require_vwap_side"] is False and c["weights"]["rvol"] == 3 and "junk" not in c
     assert DEFAULTS["min_score"] == 7
+
+
+# ------------------------------------------------------------------ v3 pullback strategy
+from app.engine.pullback import evaluate_pullback, five_min, grade  # noqa: E402
+from app.engine.regime import detect  # noqa: E402
+from app.data_source import KiteSource  # noqa: E402
+
+
+def pb_bars(up=True, pullback_to_vwap=True, trigger=True, n_after=0):
+    """Impulse 9:15-9:45, pullback 9:45-10:10, turn candle 10:10-10:15."""
+    out, px = [], 100.0
+    s = 1 if up else -1
+    def add(m, o, c, v):
+        out.append({"m": m, "t": (T0 + dt.timedelta(minutes=m)).strftime("%H:%M"), "o": o, "h": max(o, c) + 0.02,
+                    "l": min(o, c) - 0.02, "c": c, "v": v})
+    m = 0
+    for _ in range(30):                       # impulse +1.8%
+        add(m, px, px + s * 0.06, 3000); px += s * 0.06; m += 1
+    target = 100.9 if up else 99.1            # pullback towards VWAP (~100.9 / 99.1)
+    step = (target - px) / 25 if pullback_to_vwap else (px - s * 0.4 - px) / 25
+    for _ in range(25):
+        add(m, px, px + step, 1200); px += step; m += 1
+    if trigger:
+        for k in range(5):                    # strong turn candle with volume
+            add(m, px, px + s * 0.08, 4000); px += s * 0.08; m += 1
+    return out
+
+
+def pb_stock(**kw):
+    up = kw.pop("up", True)
+    bars = pb_bars(up=up, **{k: kw.pop(k) for k in list(kw) if k in ("pullback_to_vwap", "trigger")})
+    s = {"symbol": "TESTPB", "sector": "NIFTY IT", "lot_size": 100, "bars": bars, "prev_close": 99.0 if up else 101.0,
+         "day_open": 100.0, "rvol_baseline": {m: 800.0 * (m + 1) for m in range(375)},
+         "fut": {"ltp": 102.0 if up else 98.0, "prev_close": 99.1 if up else 101.1, "oi": 1_060_000, "prev_oi": 1_000_000},
+         "fut_hist": [(40, 1_040_000, 101.0), (59, 1_060_000, 101.5)], "fut_bq": 1.5 if up else 0.6, "fut_sq": 1.0,
+         "turnover_rank": 5, "upper_circuit": 120, "lower_circuit": 80, "data_ts": None}
+    s.update(kw)
+    return s
+
+
+PB_MARKET = {"nifty": {"ltp": 25250, "prev_close": 25100, "day_open": 25120, "or_high": 25200, "or_low": 25090},
+             "sectors": {"NIFTY IT": {"ltp": 1012, "prev_close": 1000}}, "breadth": {"adv": 140, "dec": 70},
+             "vix": None, "feed_degraded": False}
+PB_BEAR_MARKET = {"nifty": {"ltp": 24950, "prev_close": 25100, "day_open": 25080, "or_high": 25110, "or_low": 25000},
+                  "sectors": {"NIFTY IT": {"ltp": 988, "prev_close": 1000}}, "breadth": {"adv": 60, "dec": 150},
+                  "vix": None, "feed_degraded": False}
+
+
+def pb_now(stock):
+    return T0 + dt.timedelta(minutes=stock["bars"][-1]["m"] + 1, seconds=2)
+
+
+def test_five_min_only_completed():
+    bars = pb_bars()[:58]           # last group (55-59) incomplete
+    b5 = five_min(bars)
+    assert b5[-1]["k"] == 10 and all(b["n"] == 5 for b in b5)
+
+
+def test_regime_detection():
+    assert detect(PB_MARKET, CFG)["regime"] == "STRONG_BULLISH"
+    assert detect(PB_BEAR_MARKET, CFG)["regime"] == "STRONG_BEARISH"
+    flat = {"nifty": {"ltp": 25110, "prev_close": 25100, "day_open": 25100, "or_high": 25150, "or_low": 25080},
+            "breadth": {"adv": 100, "dec": 100}}
+    assert detect(flat, CFG)["regime"] == "SIDEWAYS" and detect(flat, CFG)["allows"] is None
+    vixy = dict(PB_MARKET, vix={"ltp": 15.5, "prev_close": 14.0})
+    assert detect(vixy, CFG)["regime"] == "HIGH_VOLATILITY"
+
+
+def test_pullback_triggers_bull_and_bear():
+    for up, mk in ((True, PB_MARKET), (False, PB_BEAR_MARKET)):
+        st = pb_stock(up=up)
+        ev = evaluate_pullback(st, mk, detect(mk, CFG), CFG, pb_now(st), None, live=False)
+        assert ev["status"] == "TRIGGER", (up, ev["reject_reasons"], ev.get("wait_reason"), ev["metrics"])
+        lv = ev["levels"]
+        if up:
+            assert lv["u_sl"] < lv["entry"] < lv["u_t1"] < lv["u_t2"]
+        else:
+            assert lv["u_sl"] > lv["entry"] > lv["u_t1"] > lv["u_t2"]
+        assert ev["pre_score"] >= 50
+
+
+def test_pullback_blocked_by_regime():
+    st = pb_stock(up=True)
+    ev = evaluate_pullback(st, PB_BEAR_MARKET, detect(PB_BEAR_MARKET, CFG), CFG, pb_now(st), None, live=False)
+    assert ev["status"] == "REJECTED" and any("regime" in r for r in ev["reject_reasons"])
+
+
+def test_pullback_waits_without_trigger_candle():
+    st = pb_stock(up=True, trigger=False)
+    ev = evaluate_pullback(st, PB_MARKET, detect(PB_MARKET, CFG), CFG, pb_now(st), None, live=False)
+    assert ev["status"] == "WATCHING" and ev["stage"] == "STAGE2"
+
+
+def test_pullback_rejects_chase_and_degraded_feed():
+    st = pb_stock(up=True, prev_close=96.0)    # ~ +6%
+    ev = evaluate_pullback(st, PB_MARKET, detect(PB_MARKET, CFG), CFG, pb_now(st), None, live=False)
+    assert ev["status"] == "REJECTED"
+    st = pb_stock(up=True, data_ts=time.time())
+    deg = dict(PB_MARKET, feed_degraded=True)
+    ev = evaluate_pullback(st, deg, detect(deg, CFG), CFG, dt.datetime.now(IST), None, live=True)
+    assert ev["status"] == "REJECTED" and any("WebSocket" in r or "REST" in r for r in ev["reject_reasons"])
+
+
+def test_pullback_no_lookahead():
+    st = pb_stock(up=True)
+    cut = dict(st, bars=st["bars"][:55])
+    ev1 = evaluate_pullback(cut, PB_MARKET, detect(PB_MARKET, CFG), CFG, pb_now(cut), None, live=False)
+    fut = copy.deepcopy(st["bars"])
+    for b in fut[55:]:
+        b.update(c=b["c"] * 3, h=b["h"] * 3)
+    ev2 = evaluate_pullback(dict(st, bars=fut[:55]), PB_MARKET, detect(PB_MARKET, CFG), CFG, pb_now(cut), None, live=False)
+    assert ev1["status"] == ev2["status"] and ev1["pre_score"] == ev2["pre_score"]
+
+
+def test_grades():
+    r = {"min_score_add": 0}
+    assert grade(90, r, CFG) == "A+" and grade(78, r, CFG) == "A" and grade(66, r, CFG) == "B" and grade(50, r, CFG) is None
+    assert grade(78, {"min_score_add": 5}, CFG) == "B"
+
+
+def test_daily_and_sector_caps():
+    cfg = dict(CFG, max_alerts_per_day=2, max_per_sector=1, max_open_positions=10, time_stop_minutes=0)
+    mgr = SignalManager(lambda: cfg)
+    now = dt.datetime.combine(dt.date(2026, 11, 10), dt.time(10, 30), IST)
+    a = mgr.on_trigger(dict(_fake_ev("HDFCBANK")), {"candidates": []}, _fake_plan("HDFCBANKCE"), {}, now)
+    b = mgr.on_trigger(dict(_fake_ev("ICICIBANK")), {"candidates": []}, _fake_plan("ICICIBANKCE"), {}, now)
+    assert a["created"] and not b["created"] and "sector cap" in b["reason"]
+    c = mgr.on_trigger(dict(_fake_ev("INFY")), {"candidates": []}, _fake_plan("INFYCE"), {}, now)
+    d = mgr.on_trigger(dict(_fake_ev("TCS")), {"candidates": []}, _fake_plan("TCSCE"), {}, now)
+    assert c["created"] and not d["created"] and "cap" in d["reason"]
+
+
+def test_time_stop():
+    cfg = dict(CFG, max_alerts_per_day=99, max_per_sector=99, max_open_positions=10)
+    mgr = SignalManager(lambda: cfg)
+    now = dt.datetime.combine(dt.date(2026, 11, 11), dt.time(10, 30), IST)
+    sid = mgr.on_trigger(_fake_ev("TS1"), {"candidates": []}, _fake_plan("TS1CE"), {}, now)["id"]
+    mgr.update(now + dt.timedelta(seconds=5), {"TS1CE": {"bid": 9.95, "ask": 10.0}}, {"TS1": 100.1})
+    mgr.update(now + dt.timedelta(minutes=31), {"TS1CE": {"bid": 10.1, "ask": 10.2}}, {"TS1": 100.2})
+    s = mgr.get(sid)
+    assert s["status"] == "EXPIRED" and "Time stop" in s["outcome"]
+
+
+def test_token_validity_rule():
+    ist = dt.timezone(dt.timedelta(hours=5, minutes=30))
+    now = dt.datetime.now(ist)
+    fresh = now if now.hour >= 6 else now
+    assert KiteSource._token_still_valid({"saved_at": fresh.isoformat()})
+    stale = (now - dt.timedelta(days=1)).replace(hour=5, minute=0)
+    assert not KiteSource._token_still_valid({"saved_at": stale.isoformat()})
+    assert not KiteSource._token_still_valid({"date": now.date().isoformat()})   # old format -> re-login
+
+
+def test_pullback_backtest_runs():
+    from app.engine.backtest_pullback import run
+    feed = SimFeed(lambda: CFG, manual=True, day=DAY)
+    src = feed.backtest_source(15)
+    r = run(src["symbols"], src["loader"], src["indices"], CFG, days=15, source=src["source"])
+    assert r["stats"].get("trades", 0) >= 1 and "by_regime" in r["stats"]
+    per_day = {}
+    for t in r["trades"]:
+        per_day[t["day"]] = per_day.get(t["day"], 0) + 1
+    assert max(per_day.values()) <= CFG["max_alerts_per_day"]

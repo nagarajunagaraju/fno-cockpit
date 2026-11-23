@@ -151,6 +151,9 @@ fun HomeScreen(api: Api, prefs: Prefs, go: (Screen) -> Unit) {
                 KV2("NIFTY 50", "${signed(nf)}%", "BANK NIFTY", "${signed(bn)}%", col(nf), col(bn))
                 val br = mk.optJSONObject("breadth")
                 KV2("Breadth", br?.let { "${it.optInt("adv")}↑ ${it.optInt("dec")}↓" } ?: "—", "Updated", sc.optString("updated").drop(11).take(8))
+                val rg = sc.optJSONObject("regime")
+                KV2("Regime", rg?.optString("regime")?.replace("_", " ") ?: "—", "Alerts today", "${sc.optInt("alerts_today")} / ${sc.optInt("max_alerts")}",
+                    when (rg?.optString("allows")) { "CE" -> Up; "PE" -> Dn; else -> Warn })
                 KV2("Day P&L", rs(risk.dbl("day_pnl")), "Open", "${risk.optInt("open_positions")}/${risk.optInt("max_open_positions")}", col(risk.dbl("day_pnl")))
                 if (risk.optBoolean("locked")) Text("DAILY LOSS LOCK ACTIVE — no new signals today", color = Dn, fontWeight = FontWeight.Bold)
                 if (feed.optString("mode") == "LIVE" && !feed.optBoolean("logged_in")) {
@@ -173,13 +176,13 @@ fun HomeScreen(api: Api, prefs: Prefs, go: (Screen) -> Unit) {
         val closed = paper.optJSONArray("closed_today").objs()
         item { SectionTitle("Active signals (${open.size})") }
         if (open.isEmpty()) item {
-            Text("No active signal. Alert vachedi anni mandatory filters + entry trigger pass ayinappude. NO TRADE kuda valid answer.", color = Mut, fontSize = 13.sp)
+            Text("No active signal. Strong stock VWAP ki pullback ayyi malli turn ayinappude alert (roju max 3). NO TRADE kuda valid answer.", color = Mut, fontSize = 13.sp)
         }
         items(open, key = { "o" + it.optLong("id") }) { SignalCard(it) { go(Screen.Signal(it.optLong("id"))) } }
-        item { SectionTitle("Paiki velle setups (bullish)") }
+        item { SectionTitle("Paiki velle setups (bullish) · Stage 1/2") }
         if (bull.isEmpty()) item { Text("None right now", color = Mut, fontSize = 13.sp) }
         items(bull.take(8), key = { "b" + it.optString("symbol") }) { SetupRow(it) { go(Screen.Stock(it.optString("symbol"))) } }
-        item { SectionTitle("Kindiki padipoye setups (bearish)") }
+        item { SectionTitle("Kindiki padipoye setups (bearish) · Stage 1/2") }
         if (bear.isEmpty()) item { Text("None right now", color = Mut, fontSize = 13.sp) }
         items(bear.take(8), key = { "s" + it.optString("symbol") }) { SetupRow(it) { go(Screen.Stock(it.optString("symbol"))) } }
         if (closed.isNotEmpty()) {
