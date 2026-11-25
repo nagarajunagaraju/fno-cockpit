@@ -20,7 +20,7 @@ import kotlin.concurrent.thread
 
 /**
  * Foreground service that polls YOUR server for new signal events and shows them as notifications.
- * Every 10 s during 09:00–15:40 IST, every 5 min 18:45–21:45 (evening watchlist), asleep otherwise. No Firebase needed.
+ * Every 10 s during 09:00–15:40 IST, every 5 min 18:45–22:45 (evening watchlist), asleep otherwise. No Firebase needed.
  */
 class AlertService : Service() {
     @Volatile private var running = false
@@ -98,12 +98,12 @@ class AlertService : Service() {
         return t.isAfter(LocalTime.of(9, 0)) && t.isBefore(LocalTime.of(15, 40))
     }
 
-    /** 18:45–21:45 IST weekdays: the evening FII watchlist arrives here (polled every 5 min). */
+    /** 18:45–22:45 IST weekdays: the evening FII watchlist arrives here (polled every 5 min). */
     private fun eveningWindow(): Boolean {
         val now = ZonedDateTime.now(ZoneId.of("Asia/Kolkata"))
         if (now.dayOfWeek == DayOfWeek.SATURDAY || now.dayOfWeek == DayOfWeek.SUNDAY) return false
         val t = now.toLocalTime()
-        return t.isAfter(LocalTime.of(18, 45)) && t.isBefore(LocalTime.of(21, 45))
+        return t.isAfter(LocalTime.of(18, 45)) && t.isBefore(LocalTime.of(22, 45))
     }
 
     private fun loop() {

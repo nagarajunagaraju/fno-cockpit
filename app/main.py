@@ -68,6 +68,8 @@ async def require_token(request: Request, call_next):
 
 
 app.include_router(engine_router)
+from .smf.api import router as smf_router, Scheduler as SmfScheduler  # noqa: E402
+app.include_router(smf_router)
 
 # ------------------------------------------------------------------ signal engine
 feed = SimFeed(get_cfg, speed=float(os.environ.get("COCKPIT_SIM_SPEED", "20"))) if DEMO else \
@@ -84,6 +86,8 @@ if acquire_singleton(engine_store.DATA / "scanner.lock"):
         CTX["eod"] = EodJob(feed, get_cfg,
                             lambda k, t, b, p: scanner.manager.emit(dt.datetime.now(_IST), k, t, b, None, p))
         CTX["eod"].start()
+        CTX["smf"] = SmfScheduler(lambda k, t, b, p: scanner.manager.emit(dt.datetime.now(_IST), k, t, b, None, p))
+        CTX["smf"].start()
 else:
     CTX["singleton"] = "another process already runs the scanner - not started here"
     log.warning(CTX["singleton"])

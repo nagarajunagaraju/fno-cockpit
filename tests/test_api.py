@@ -63,3 +63,15 @@ def test_existing_dashboard_still_works():
     assert client.post("/api/settings", headers=H, json={"capital": 300000}).status_code == 200
     assert client.get("/static/signals.html").status_code == 200
     assert client.get("/static/login_ok.html").status_code == 200
+
+
+def test_smf_endpoints():
+    assert client.get("/api/smf/status").status_code == 401
+    st = client.get("/api/smf/status", headers=H).json()
+    assert "data" in st and st["config"]["lists"]["min_score"] >= 0 and st["telegram_configured"] in (True, False)
+    assert client.get("/api/smf/today", headers=H).status_code == 200
+    assert client.post("/api/smf/run/hack", headers=H).status_code == 400
+    assert client.post("/api/smf/telegram", headers=H, json={"bot_token": "x", "chat_id": "1"}).status_code == 400
+    r = client.post("/api/smf/settings", headers=H, json={"min_score": 7})
+    assert r.status_code == 200 and r.json()["override"]["lists"]["min_score"] == 7
+    assert client.get("/api/smf/paper", headers=H).json()["all_time"]["trades"] == 0

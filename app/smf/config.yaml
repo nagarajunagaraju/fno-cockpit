@@ -1,0 +1,54 @@
+# Smart Money Footprint (SMF) settings. Change weights here; the app shows each point's reason.
+history_days: 400
+
+bull_weights:
+  accum_days: 2.0        # accum_days_10 >= accum_min
+  delivery_spike: 1.5    # deliv_ratio >= 2.0 and deliv_pct_vs_avg > +10
+  strong_close: 1.0      # vol_ratio >= 1.5 and CLV >= 0.5
+  absorption: 1.0        # an absorption day in the last 5 days
+  tight_base: 1.0        # base_width <= tight_base_pct
+  near_breakout: 1.0     # within near_pct of the 20-day high
+  trend: 1.0             # close > EMA20 > EMA50
+  oi_long: 1.0           # F&O only: LONG buildup and 5-day OI change > +5%
+  rs: 0.5                # 20-day return better than Nifty
+
+bear_weights:            # mirror of bull
+  distrib_days: 2.0
+  delivery_spike: 1.5    # deliv spike on a down close (CLV < 0)
+  weak_close: 1.0
+  absorption: 1.0        # big volume, small range, CLV < 0 (supply absorbing demand)
+  tight_base: 1.0
+  near_breakdown: 1.0
+  trend: 1.0             # close < EMA20 < EMA50
+  oi_short: 1.0
+  rs: 0.5
+
+rules:
+  accum_min: 3
+  deliv_ratio_day: 1.5   # for accum / distrib day counting
+  tight_base_pct: 8.0
+  near_pct: 3.0
+  oi5_min_pct: 5.0
+  absorption_vol: 1.8
+  absorption_range_atr: 0.8
+  markup_vol: 1.5
+
+lists:
+  fno_min_turnover_cr: 50       # F&O list: 20-day avg turnover
+  inv_min_turnover_cr: 10       # investment (Nifty 500) list
+  min_score: 6.0                # change after the backtest
+  top_n: 10
+
+trade:
+  capital: 120000
+  risk_pct: 2.0
+  atr_sl_mult: 1.5
+  t1_r: 1.5
+  t2_r: 2.5
+  max_hold_days: 15
+  entry_buffer_pct: 0.1
+  cost_pct: 0.15                # round-trip cost used in backtest
+
+schedule:
+  start: "18:30"                # NSE delivery file comes after close
+  give_up: "22:30"

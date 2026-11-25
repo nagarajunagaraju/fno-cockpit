@@ -39,6 +39,7 @@ sealed class Screen {
     data object Risk : Screen()
     data object Health : Screen()
     data object Settings : Screen()
+    data object Smf : Screen()
 }
 
 class MainActivity : ComponentActivity() {
@@ -100,6 +101,7 @@ fun App(prefs: Prefs, openSignal: MutableState<Long>) {
                 Screen.Risk -> RiskScreen(api)
                 Screen.Health -> HealthScreen(api, prefs)
                 Screen.Settings -> SettingsScreen(prefs, first = false) { tab(Screen.Home) }
+                Screen.Smf -> SmfScreen(api, ::go)
             }
         }
     }
@@ -131,6 +133,7 @@ fun HomeScreen(api: Api, prefs: Prefs, go: (Screen) -> Unit) {
         JSONObject().put("health", api.obj("/api/engine/health")).put("scanner", api.obj("/api/engine/scanner"))
             .put("paper", api.obj("/api/engine/paper")).put("risk", api.obj("/api/engine/risk"))
             .put("wl", runCatching { api.obj("/api/engine/watchlist") }.getOrNull() ?: JSONObject())
+            .put("smf", runCatching { api.obj("/api/smf/today") }.getOrNull() ?: JSONObject())
     }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
@@ -167,6 +170,7 @@ fun HomeScreen(api: Api, prefs: Prefs, go: (Screen) -> Unit) {
         }
         val rep = d.optJSONObject("wl")?.optJSONObject("report")
         item { WatchlistCard(rep, d.optJSONObject("wl")?.optString("today") ?: "", go) }
+        item { SmfHomeCard(d.optJSONObject("smf")?.optJSONObject("report"), go) }
         val counts = sc.optJSONObject("counts") ?: JSONObject()
         val bull = sc.optJSONArray("bullish").objs(); val bear = sc.optJSONArray("bearish").objs()
         item {
@@ -200,7 +204,7 @@ fun HomeScreen(api: Api, prefs: Prefs, go: (Screen) -> Unit) {
 fun MoreScreen(go: (Screen) -> Unit) {
     Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("More", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        listOf("Signal history" to Screen.History, "Backtesting" to Screen.Backtest, "Risk management" to Screen.Risk,
+        listOf("Smart Money (SMF) - evening lists" to Screen.Smf, "Signal history" to Screen.History, "Backtesting" to Screen.Backtest, "Risk management" to Screen.Risk,
             "Data / API health" to Screen.Health, "Settings (server, token, alerts)" to Screen.Settings).forEach { (t, s) ->
             Card(onClick = { go(s) }) { Text(t, fontSize = 16.sp) }
         }

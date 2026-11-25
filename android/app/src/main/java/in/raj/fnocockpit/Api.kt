@@ -49,6 +49,17 @@ class Api(private val base: String, private val token: String) {
     suspend fun post(path: String, body: JSONObject): JSONObject =
         withContext(Dispatchers.IO) { JSONObject(call(path, "POST", body.toString())) }
 
+    /** Raw bytes (Excel download). */
+    suspend fun bytes(path: String): ByteArray = withContext(Dispatchers.IO) {
+        val c = (URL(base + path).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 8000; readTimeout = 30000; setRequestProperty("X-App-Token", token)
+        }
+        try {
+            if (c.responseCode !in 200..299) throw ApiException("Server ${c.responseCode}", c.responseCode)
+            c.inputStream.use { it.readBytes() }
+        } finally { c.disconnect() }
+    }
+
     /** Blocking variant for the background service thread. */
     fun eventsBlocking(after: Long): JSONArray = JSONArray(call("/api/engine/events?after=$after&limit=50"))
     fun lastEventIdBlocking(): Long = JSONObject(call("/api/engine/events/last")).optLong("last_id", 0)
