@@ -27,11 +27,14 @@ install_autoupdate() {
 if [ -f "$APP/config.json" ] && [ -f /etc/caddy/Caddyfile ] && grep -q reverse_proxy /etc/caddy/Caddyfile; then
   install_autoupdate
   HOST=$(head -1 /etc/caddy/Caddyfile | awk '{print $1}')
-  if [ "$AUTO" = 1 ] && [ "$BEFORE" = "$AFTER" ]; then
+  # Compare with the commit actually deployed (the timer's own git pull makes BEFORE==AFTER).
+  DEPLOYED=$(cat "$APP/.deployed_commit" 2>/dev/null || true)
+  if [ "$AUTO" = 1 ] && [ "$DEPLOYED" = "$AFTER" ]; then
     echo "Already up to date ($AFTER)"; exit 0
   fi
   echo "==> Existing install found: updating code to ${AFTER:0:7}"
   bash "$SRC/deploy/update_vps.sh"
+  echo "$AFTER" > "$APP/.deployed_commit"
   [ "$AUTO" = 1 ] && exit 0
 else
   IP=$(curl -fsS https://checkip.amazonaws.com || curl -fsS https://api.ipify.org)

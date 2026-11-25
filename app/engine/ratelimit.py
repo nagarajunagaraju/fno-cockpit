@@ -4,8 +4,13 @@ from __future__ import annotations
 import threading
 import time
 
-LIMITS = {"quote": 1.0, "ltp": 1.0, "ohlc": 1.0, "historical_data": 3.0}
+LIMITS = {"quote": 1.0, "ltp": 1.0, "ohlc": 1.0, "historical_data": 2.0}
 DEFAULT = 8.0
+
+
+def _is_throttle(e: Exception) -> bool:
+    m = str(e).lower()
+    return "too many requests" in m or "429" in m or "rate limit" in m
 
 
 class _Bucket:
@@ -31,6 +36,7 @@ class RateLimitedKite:
         self._buckets = {k: _Bucket(v * 0.9) for k, v in LIMITS.items()}
         self._default = _Bucket(DEFAULT)
         self.calls = 0
+        self.throttled = 0
 
     def __getattr__(self, name):
         attr = getattr(self._kite, name)
@@ -39,7 +45,16 @@ class RateLimitedKite:
         bucket = self._buckets.get(name, self._default)
 
         def wrapped(*a, **kw):
-            bucket.wait()
-            self.calls += 1
-            return attr(*a, **kw)
+            delay = 1.0
+            for attempt in range(5):
+                bucket.wait()
+                self.calls += 1
+                try:
+                    return attr(*a, **kw)
+                except Exception as e:  # Kite throttling -> back off and retry, never give up on first 429
+                    if attempt == 4 or not _is_throttle(e):
+                        raise
+                    self.throttled += 1
+                    time.sleep(delay)
+                    delay *= 2
         return wrapped

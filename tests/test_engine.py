@@ -623,3 +623,23 @@ def test_context_only_for_its_date():
     assert eod.context_for(dt.date(2026, 11, 24))["fii_mood"] == "BULLISH"
     assert eod.context_for(dt.date(2026, 11, 25))["available"] is False
     store.kv_set("eod_report", None)
+
+
+def test_rate_limiter_retries_on_kite_throttle():
+    class Fake:
+        n = 0
+
+        def historical_data(self, *a, **k):
+            Fake.n += 1
+            if Fake.n < 3:
+                raise Exception("Too many requests")
+            return ["ok"]
+
+        def profile(self):
+            raise Exception("Invalid token")
+
+    rk = RateLimitedKite(Fake())
+    t = time.time()
+    assert rk.historical_data(1) == ["ok"] and rk.throttled == 2 and time.time() - t >= 2.5
+    with pytest.raises(Exception, match="Invalid token"):   # non-throttle errors are not retried
+        rk.profile()

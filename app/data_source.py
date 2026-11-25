@@ -292,16 +292,20 @@ class KiteSource:
             cache_file = CACHE / f"history_{today.isoformat()}.json"
             cached = json.loads(cache_file.read_text()) if cache_file.exists() else {}
             frm = today - dt.timedelta(days=self.history_days)
+            failed: list[str] = []
             for u in self.universe:
                 sym = u["symbol"]
                 if sym in cached:
                     self.history[sym] = cached[sym]
                 else:
                     self._progress["message"] = f"Loading history: {sym}"
-                    cash = self.kite.historical_data(u["cash_token"], frm, today, "day")
-                    time.sleep(0.35)  # stay under 3 req/sec
-                    fut = self.kite.historical_data(u["fut_token"], today - dt.timedelta(days=10), today, "day", oi=True)
-                    time.sleep(0.35)
+                    try:
+                        cash = self.kite.historical_data(u["cash_token"], frm, today, "day")
+                        fut = self.kite.historical_data(u["fut_token"], today - dt.timedelta(days=10), today, "day", oi=True)
+                    except Exception as e:  # skip this stock, keep loading the rest
+                        failed.append(f"{sym}: {e}")
+                        self._progress["loaded"] += 1
+                        continue
                     candles = [{"date": c["date"].date().isoformat(), "open": c["open"], "high": c["high"],
                                 "low": c["low"], "close": c["close"], "volume": c.get("volume", 0)}
                                for c in cash if c["date"].date() < today]
@@ -313,6 +317,8 @@ class KiteSource:
                         cache_file.write_text(json.dumps(cached))
                 self._progress["loaded"] += 1
             cache_file.write_text(json.dumps(cached))
+            self._progress["failed"] = failed[:20]
+            self._progress["failed_count"] = len(failed)
             self._progress["message"] = "Ready"
         except Exception as e:  # surface the error in the UI instead of dying silently
             self._progress["message"] = f"Error: {e}"

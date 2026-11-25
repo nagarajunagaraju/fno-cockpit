@@ -1,6 +1,9 @@
 package `in`.raj.fnocockpit
 
+import android.app.AlarmManager
+import android.app.PendingIntent
 import android.app.Service
+import android.os.PowerManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -36,6 +39,8 @@ class AlertService : Service() {
         if (!running) {
             running = true
             worker = thread(name = "cockpit-alerts", isDaemon = true) { loop() }
+        } else if (intent?.action == ACTION_WAKE) {
+            worker?.interrupt()     // alarm fired: stop sleeping, check the window now
         }
         return START_STICKY
     }
@@ -43,7 +48,47 @@ class AlertService : Service() {
     override fun onDestroy() {
         running = false
         worker?.interrupt()
+        releaseWake()
         super.onDestroy()
+    }
+
+    // ---- staying awake: phone deep sleep pauses Thread.sleep, so
+    // (1) during market hours hold a partial wake lock (CPU only, screen stays off),
+    // (2) for long sleeps set an AlarmManager alarm that wakes the phone and restarts polling.
+    private var wake: PowerManager.WakeLock? = null
+
+    private fun holdWake(ms: Long) {
+        if (wake?.isHeld == true) return
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "fnocockpit:market").apply {
+            setReferenceCounted(false); acquire(ms)
+        }
+    }
+
+    private fun releaseWake() {
+        try { if (wake?.isHeld == true) wake?.release() } catch (_: Exception) { }
+        wake = null
+    }
+
+    private fun scheduleWake(ms: Long) {
+        val am = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val pi = PendingIntent.getForegroundService(this, 7, Intent(this, AlertService::class.java).setAction(ACTION_WAKE),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val at = System.currentTimeMillis() + ms
+        if (Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()) {
+            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+        } else {
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)   // inexact: may be a few minutes late
+        }
+    }
+
+    /** Sleeps by the wall clock in <=60 s steps (Thread.sleep alone stops counting while the phone sleeps). */
+    private fun sleepUntil(wallMs: Long) {
+        while (running) {
+            val left = wallMs - System.currentTimeMillis()
+            if (left <= 0) return
+            try { Thread.sleep(minOf(left, 60_000L)) } catch (_: InterruptedException) { return }
+        }
     }
 
     private fun marketWindow(): Boolean {
@@ -95,6 +140,7 @@ class AlertService : Service() {
                 failures++
                 updateStatus(prefs, "Server not reachable (${e.message?.take(60)}) · retry")
             }
+            if (inWindow) holdWake(7 * 60 * 60 * 1000L) else releaseWake()
             val sleepMs = when {
                 failures > 0 && inWindow -> minOf(60_000L, 10_000L * failures)
                 inWindow -> 10_000L
@@ -105,7 +151,8 @@ class AlertService : Service() {
                     ms
                 }
             }
-            try { Thread.sleep(sleepMs) } catch (_: InterruptedException) { }
+            if (sleepMs > 120_000L) scheduleWake(sleepMs)
+            sleepUntil(System.currentTimeMillis() + sleepMs)
         }
     }
 
@@ -132,6 +179,8 @@ class AlertService : Service() {
     }
 
     companion object {
+        const val ACTION_WAKE = "in.raj.fnocockpit.WAKE"
+
         fun start(ctx: Context) {
             val p = Prefs(ctx)
             if (!p.configured || !p.alertsEnabled) return
