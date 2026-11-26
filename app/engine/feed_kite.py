@@ -82,6 +82,10 @@ class KiteFeed:
     def _run(self):
         while True:
             try:
+                if not self.cfg().get("stock_scanner", True):
+                    self.state["stage"] = "stock feed off (Sensex mode)"
+                    time.sleep(5)
+                    continue
                 if self.src.ready() and self.src.progress().get("message") == "Ready":
                     today = ist_now().date().isoformat()
                     if self.day != today:

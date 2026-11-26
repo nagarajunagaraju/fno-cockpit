@@ -35,7 +35,10 @@ log = setup_logging(engine_store.DATA / "logs")
 
 journal.init()
 DEMO = os.environ.get("COCKPIT_DEMO") == "1" or not CONFIG.get("api_key")
-source = DemoSource() if DEMO else KiteSource(CONFIG["api_key"], CONFIG["api_secret"])
+source = DemoSource() if DEMO else KiteSource.__new__(KiteSource)
+if not DEMO:   # set before __init__ so a saved token's background load already respects Sensex mode
+    source.skip_stock_history = lambda: not get_cfg().get("stock_scanner", True)
+    source.__init__(CONFIG["api_key"], CONFIG["api_secret"])
 if not DEMO:
     source.kite = RateLimitedKite(source.kite)   # every Kite REST call goes through the rate limiter
 
@@ -70,6 +73,8 @@ async def require_token(request: Request, call_next):
 app.include_router(engine_router)
 from .smf.api import router as smf_router, Scheduler as SmfScheduler  # noqa: E402
 app.include_router(smf_router)
+from .sensex.api import router as sensex_router, CTX as SENSEX_CTX  # noqa: E402
+app.include_router(sensex_router)
 
 # ------------------------------------------------------------------ signal engine
 feed = SimFeed(get_cfg, speed=float(os.environ.get("COCKPIT_SIM_SPEED", "20"))) if DEMO else \
@@ -88,6 +93,10 @@ if acquire_singleton(engine_store.DATA / "scanner.lock"):
         CTX["eod"].start()
         CTX["smf"] = SmfScheduler(lambda k, t, b, p: scanner.manager.emit(dt.datetime.now(_IST), k, t, b, None, p))
         CTX["smf"].start()
+        from .sensex.live import SensexLive
+        SENSEX_CTX["src"] = source
+        SENSEX_CTX["live"] = SensexLive(source, scanner.manager, get_cfg)
+        SENSEX_CTX["live"].start()
 else:
     CTX["singleton"] = "another process already runs the scanner - not started here"
     log.warning(CTX["singleton"])

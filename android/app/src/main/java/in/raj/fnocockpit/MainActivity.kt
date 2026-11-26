@@ -40,6 +40,7 @@ sealed class Screen {
     data object Health : Screen()
     data object Settings : Screen()
     data object Smf : Screen()
+    data object Sensex : Screen()
 }
 
 class MainActivity : ComponentActivity() {
@@ -66,7 +67,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun App(prefs: Prefs, openSignal: MutableState<Long>) {
-    var screen by remember { mutableStateOf<Screen>(if (prefs.configured) Screen.Home else Screen.Setup) }
+    var screen by remember { mutableStateOf<Screen>(if (prefs.configured) Screen.Sensex else Screen.Setup) }
     val stack = remember { mutableStateListOf<Screen>() }
     fun go(s: Screen) { stack.add(screen); screen = s }
     fun tab(s: Screen) { stack.clear(); screen = s }
@@ -75,12 +76,12 @@ fun App(prefs: Prefs, openSignal: MutableState<Long>) {
     }
     BackHandler(enabled = stack.isNotEmpty()) { screen = stack.removeAt(stack.lastIndex) }
     val api = remember(prefs.serverUrl, prefs.token, screen) { Api(prefs.serverUrl, prefs.token) }
-    val isTab = screen in listOf(Screen.Home, Screen.Scanner, Screen.Paper, Screen.More)
+    val isTab = screen in listOf(Screen.Sensex, Screen.Home, Screen.Paper, Screen.More)
 
     Scaffold(
         bottomBar = {
             if (isTab) NavigationBar {
-                listOf(Triple(Screen.Home, "Signals", Icons.Filled.Notifications), Triple(Screen.Scanner, "Scanner", Icons.Filled.Search),
+                listOf(Triple(Screen.Sensex, "Sensex", Icons.Filled.Search), Triple(Screen.Home, "Signals", Icons.Filled.Notifications),
                     Triple(Screen.Paper, "Paper", Icons.Filled.ShoppingCart), Triple(Screen.More, "More", Icons.Filled.Menu)).forEach { (s, l, i) ->
                     NavigationBarItem(selected = screen == s, onClick = { tab(s) }, icon = { Icon(i, l) }, label = { Text(l) })
                 }
@@ -89,7 +90,7 @@ fun App(prefs: Prefs, openSignal: MutableState<Long>) {
     ) { pad ->
         Box(Modifier.padding(pad)) {
             when (val s = screen) {
-                Screen.Setup -> SettingsScreen(prefs, first = true) { tab(Screen.Home) }
+                Screen.Setup -> SettingsScreen(prefs, first = true) { tab(Screen.Sensex) }
                 Screen.Home -> HomeScreen(api, prefs, ::go)
                 Screen.Scanner -> ScannerScreen(api, ::go)
                 Screen.Paper -> PaperScreen(api, ::go)
@@ -102,6 +103,7 @@ fun App(prefs: Prefs, openSignal: MutableState<Long>) {
                 Screen.Health -> HealthScreen(api, prefs)
                 Screen.Settings -> SettingsScreen(prefs, first = false) { tab(Screen.Home) }
                 Screen.Smf -> SmfScreen(api, ::go)
+                Screen.Sensex -> SensexScreen(api, ::go)
             }
         }
     }

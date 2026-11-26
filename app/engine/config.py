@@ -122,6 +122,13 @@ DEFAULTS: dict = {
     "max_ivhv_ratio": 1.4,
     "require_websocket": True,        # no new signals while running on REST fallback
 
+    # ---- v4: Sensex-only mode ----------------------------------------------------
+    "stock_scanner": False,           # stock pullback scanner off (Sensex live commentary is the engine)
+    "sensex_avoid_expiry_day": True,  # on expiry day use the next weekly expiry (theta)
+    "sensex_target_delta": 0.55,
+    "sensex_max_spread_pct": 3.0,
+    "sensex_risk_pct": 1.0,           # % of capital risked per Sensex trade
+
     # ---- v3.1: FII watchlist + extra filters -----------------------------------
     "trend_filter": True,             # CE only above 20 & 50 DMA, PE only below both
     "sector_filter": True,            # sector index must move the same side (mandatory when available)

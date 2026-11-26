@@ -149,6 +149,9 @@ class Scanner:
 
     def cycle(self, now: dt.datetime | None = None):
         cfg = get_cfg()
+        if not cfg.get("stock_scanner", True) and getattr(self.feed, "mode", "") != "SIMULATED":
+            self.snapshot = {"status": "stock scanner off (Sensex mode)", "feed": self.feed.status(), "updated": None}
+            return
         if not self.feed.ready():
             self.snapshot = {"status": "waiting for data", "feed": self.feed.status(), "updated": None}
             return

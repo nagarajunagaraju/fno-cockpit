@@ -140,12 +140,13 @@ class SignalManager:
 
     def on_trigger(self, ev, sel, plan, explanation, now, mode="LIVE") -> dict:
         lvl = ev["trigger"]["level"]
-        dup = self.duplicate_reason(ev["symbol"], ev["direction"], lvl, now)
-        if dup:
-            return {"created": False, "reason": dup}
-        cap = self.cap_reason(ev["symbol"], now)
-        if cap:
-            return {"created": False, "reason": cap}
+        if not ev.get("own_limits"):      # the Sensex brain enforces its own per-day limits
+            dup = self.duplicate_reason(ev["symbol"], ev["direction"], lvl, now)
+            if dup:
+                return {"created": False, "reason": dup}
+            cap = self.cap_reason(ev["symbol"], now)
+            if cap:
+                return {"created": False, "reason": cap}
         ok, why = self.can_take(plan, now)
         if not ok:
             day = now.astimezone(IST).date().isoformat()
@@ -164,8 +165,8 @@ class SignalManager:
              json.dumps({k: v for k, v in sel.items() if k != "candidates"} | {"candidates": sel["candidates"]}),
              mode, plan["qty"], plan["qty"], plan["sl_premium"]))
         g = ev.get("grade")
-        title = (f"{'[' + g + '] ' if g else ''}BUY {plan['tradingsymbol']} | "
-                 f"{ev['symbol']} {plan['direction']} | Score {ev['score']:g}/{ev.get('max_score', 10)}")
+        title = ev.get("title") or (f"{'[' + g + '] ' if g else ''}BUY {plan['tradingsymbol']} | "
+                                    f"{ev['symbol']} {plan['direction']} | Score {ev['score']:g}/{ev.get('max_score', 10)}")
         body = (f"Entry {plan['entry_range'][0]}-{plan['entry_range'][1]} | SL {plan['sl_premium']} | "
                 f"T1 {plan['t1_premium']} | T2 {plan['t2_premium']} | {plan['lots']} lot(s), "
                 f"max loss Rs {plan['max_loss']:,.0f}")

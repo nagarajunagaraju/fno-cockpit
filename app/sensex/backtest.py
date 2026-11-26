@@ -1,0 +1,111 @@
+"""Replay the Sensex brain on Kite 1-minute history (same code as live, no look-ahead).
+
+Limits (reported in the result): results are in Sensex points / R on the underlying - option P&L
+differs (premium, theta, IV). Option-OI levels and VIX are not available historically, so they are
+not used in the backtest.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import json
+from collections import defaultdict
+from pathlib import Path
+
+from .brain import Brain
+
+IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
+
+
+def fetch_minutes(kite, token: int, days: int, cache: Path, progress=None) -> dict[str, list[dict]]:
+    """{date: [{"t","o","h","l","c"}...]} for the last `days` trading days (+ warm-up), cached per chunk."""
+    cache.mkdir(parents=True, exist_ok=True)
+    end = dt.datetime.now(IST).date() - dt.timedelta(days=1)
+    start = end - dt.timedelta(days=int(days * 1.5) + 20)
+    out: dict[str, list] = defaultdict(list)
+    d = start
+    while d <= end:
+        e = min(d + dt.timedelta(days=55), end)
+        f = cache / f"{token}_{d}_{e}.json"
+        if f.exists() and e < end:
+            rows = json.loads(f.read_text())
+        else:
+            if progress:
+                progress(f"downloading {token} {d}..{e}")
+            rows = [{"d": c["date"].strftime("%Y-%m-%d"), "t": c["date"].strftime("%H:%M"), "o": c["open"],
+                     "h": c["high"], "l": c["low"], "c": c["close"]}
+                    for c in kite.historical_data(token, d, e + dt.timedelta(days=1), "minute")]
+            f.write_text(json.dumps(rows))
+        for r in rows:
+            out[r["d"]].append({k: r[k] for k in ("t", "o", "h", "l", "c")})
+        d = e + dt.timedelta(days=1)
+    return {k: sorted(v, key=lambda b: b["t"]) for k, v in sorted(out.items()) if len(v) >= 300}
+
+
+def five_min_closes(bars):
+    return [b["c"] for b in bars if int(b["t"][3:]) % 5 == 4]
+
+
+def run(sensex: dict, nifty: dict | None, days: int, cfg: dict | None = None) -> dict:
+    dates = sorted(sensex)
+    if len(dates) < 25:
+        return {"ok": False, "error": f"only {len(dates)} days of Sensex minute data"}
+    test = dates[-days:] if len(dates) > days + 5 else dates[5:]
+    trades, day_rows = [], []
+    for d in test:
+        i = dates.index(d)
+        prev = sensex[dates[i - 1]]
+        levels = {"pdh": max(b["h"] for b in prev), "pdl": min(b["l"] for b in prev), "pdc": prev[-1]["c"]}
+        seed = []
+        for pd_ in dates[max(0, i - 5):i]:
+            seed += five_min_closes(sensex[pd_])
+        br = Brain(levels, seed, cfg)
+        nb = {b["t"]: b["c"] for b in (nifty or {}).get(d, [])}
+        nprev = (nifty or {}).get(dates[i - 1])
+        npc = nprev[-1]["c"] if nprev else None
+        for b in sensex[d]:
+            if b["t"] < "09:15" or b["t"] > "15:29":
+                continue
+            nc = nb.get(b["t"])
+            br.on_bar(b, nifty_chg=((nc - npc) / npc * 100) if (nc and npc) else None)
+        for tr in br.trades:
+            if "exit" not in tr:   # still open at data end: close at last price
+                last = sensex[d][-1]["c"]
+                tr["r"] = (last - tr["entry"]) / tr["risk"] * (1 if tr["side"] == "BULL" else -1)
+                tr["exit"] = "EOD"
+            trades.append({"day": d, "side": tr["side"], "time": tr["t"], "entry": round(tr["entry"], 1),
+                           "sl": round(tr["sl"], 1), "r": round(tr["r"], 2), "exit": tr["exit"],
+                           "risk_pts": round(tr["risk"], 1)})
+        day_rows.append({"day": d, "trades": len(br.trades), "r": round(sum(t["r"] for t in br.trades), 2)})
+    return {"ok": True, "days": len(test), "from": test[0], "to": test[-1], "stats": stats(trades),
+            "by_month": by_month(trades), "by_side": {s: stats([t for t in trades if t["side"] == s]) for s in ("BULL", "BEAR")},
+            "trades": trades[-60:], "no_trade_days": sum(1 for r in day_rows if r["trades"] == 0),
+            "notes": ["Result Sensex points lo R ga (1R = SL distance). Option P&L veru untundi (premium, theta, IV).",
+                      "Option OI levels, VIX history ledu kabatti backtest lo vaadaledu (live lo vaadutundi).",
+                      "Entry = trigger 5-min candle close; SL/target 1-min high/low tho check. Same minute lo rendu aithe SL first.",
+                      "Gata performance future guarantee kaadu."]}
+
+
+def stats(trades):
+    if not trades:
+        return {"trades": 0}
+    r = [t["r"] for t in trades]
+    eq, peak, dd = 0.0, 0.0, 0.0
+    for x in r:
+        eq += x
+        peak = max(peak, eq)
+        dd = min(dd, eq - peak)
+    wins = [x for x in r if x > 0]
+    losses = [x for x in r if x <= 0]
+    return {"trades": len(r), "win_pct": round(len(wins) / len(r) * 100, 1), "avg_r": round(sum(r) / len(r), 3),
+            "total_r": round(sum(r), 2), "avg_win_r": round(sum(wins) / len(wins), 2) if wins else 0,
+            "avg_loss_r": round(sum(losses) / len(losses), 2) if losses else 0,
+            "profit_factor": round(sum(wins) / -sum(losses), 2) if losses and sum(losses) < 0 else None,
+            "max_dd_r": round(dd, 2),
+            "exits": {k: sum(1 for t in trades if t["exit"] == k) for k in sorted({t["exit"] for t in trades})}}
+
+
+def by_month(trades):
+    m = defaultdict(list)
+    for t in trades:
+        m[t["day"][:7]].append(t)
+    return [{"month": k, **{x: stats(v)[x] for x in ("trades", "win_pct", "total_r")}} for k, v in sorted(m.items())]

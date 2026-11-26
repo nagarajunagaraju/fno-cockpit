@@ -296,7 +296,8 @@ class KiteSource:
             cached = json.loads(cache_file.read_text()) if cache_file.exists() else {}
             frm = today - dt.timedelta(days=self.history_days)
             failed: list[str] = []
-            for u in self.universe:
+            skip = bool(getattr(self, "skip_stock_history", lambda: False)())
+            for u in ([] if skip else self.universe):
                 sym = u["symbol"]
                 if sym in cached:
                     self.history[sym] = cached[sym]
