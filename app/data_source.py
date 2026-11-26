@@ -267,7 +267,10 @@ class KiteSource:
             self._progress["message"] = "Loading instruments"
             today = dt.date.today()
             nfo = self.kite.instruments("NFO")
-            nse = {i["tradingsymbol"]: i["instrument_token"] for i in self.kite.instruments("NSE")}
+            nse_list = self.kite.instruments("NSE")
+            nse = {i["tradingsymbol"]: i["instrument_token"] for i in nse_list}
+            # kept so the feed does not download the big instrument dump a second time (Kite throttles it)
+            self.index_tokens = {i["tradingsymbol"]: i["instrument_token"] for i in nse_list if i.get("segment") == "INDICES"}
             futs: dict[str, dict] = {}
             for i in nfo:
                 if i["instrument_type"] != "FUT" or i["name"] in INDEX_NAMES:

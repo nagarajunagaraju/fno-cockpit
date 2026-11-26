@@ -95,6 +95,11 @@ class KiteFeed:
                         b.flush(ist_now())
             except Exception as e:  # never let the feed thread die
                 self._err(f"feed loop: {e}")
+                # back off after a failure so one bad call cannot hammer Kite every second all day
+                self._fail = min(getattr(self, "_fail", 0) + 1, 6)
+                time.sleep(10 * self._fail)
+                continue
+            self._fail = 0
             time.sleep(1)
 
     def _prepare(self, today):
@@ -103,8 +108,10 @@ class KiteFeed:
         kite = self.src.kite
         universe = list(self.src.universe)
         self.state["universe"] = len(universe)
-        nse = kite.instruments("NSE")
-        idx_tokens = {i["tradingsymbol"]: i["instrument_token"] for i in nse if i.get("segment") == "INDICES"}
+        idx_tokens = getattr(self.src, "index_tokens", None)
+        if not idx_tokens:
+            nse = kite.instruments("NSE")
+            idx_tokens = {i["tradingsymbol"]: i["instrument_token"] for i in nse if i.get("segment") == "INDICES"}
         wanted = sector_indices() + ["INDIA VIX"]
         missing = [w for w in wanted if w not in idx_tokens]
         if missing:

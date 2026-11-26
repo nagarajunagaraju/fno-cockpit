@@ -14,7 +14,7 @@ from .backtest import run_backtest
 from .config import DEFAULTS, IST
 from .scanner import get_cfg, save_cfg
 
-VERSION = "3.2.0"
+VERSION = "3.2.1"
 router = APIRouter(prefix="/api/engine")
 CTX: dict = {"scanner": None, "feed": None, "eod": None, "started": time.time(), "singleton": None}
 BT: dict = {"running": False, "progress": {}, "error": None}
