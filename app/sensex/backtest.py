@@ -45,7 +45,7 @@ def five_min_closes(bars):
     return [b["c"] for b in bars if int(b["t"][3:]) % 5 == 4]
 
 
-def run(sensex: dict, nifty: dict | None, days: int, cfg: dict | None = None) -> dict:
+def run(sensex: dict, nifty: dict | None, days: int, cfg: dict | None = None, keep_all: bool = False) -> dict:
     dates = sorted(sensex)
     if len(dates) < 25:
         return {"ok": False, "error": f"only {len(dates)} days of Sensex minute data"}
@@ -76,6 +76,8 @@ def run(sensex: dict, nifty: dict | None, days: int, cfg: dict | None = None) ->
                            "sl": round(tr["sl"], 1), "r": round(tr["r"], 2), "exit": tr["exit"],
                            "risk_pts": round(tr["risk"], 1)})
         day_rows.append({"day": d, "trades": len(br.trades), "r": round(sum(t["r"] for t in br.trades), 2)})
+    if keep_all:
+        return {"ok": True, "all_days": test, "all_trades": trades}
     return {"ok": True, "days": len(test), "from": test[0], "to": test[-1], "stats": stats(trades),
             "by_month": by_month(trades), "by_side": {s: stats([t for t in trades if t["side"] == s]) for s in ("BULL", "BEAR")},
             "trades": trades[-60:], "no_trade_days": sum(1 for r in day_rows if r["trades"] == 0),
@@ -109,3 +111,63 @@ def by_month(trades):
     for t in trades:
         m[t["day"][:7]].append(t)
     return [{"month": k, **{x: stats(v)[x] for x in ("trades", "win_pct", "total_r")}} for k, v in sorted(m.items())]
+
+
+# ------------------------------------------------------------------ strategy lab
+import itertools  # noqa: E402
+
+COST_R = 0.07   # options charges + spread per round trip, approx in R (conservative)
+
+
+def _net(trades):
+    return [dict(t, r=round(t["r"] - COST_R, 3)) for t in trades]
+
+
+def lab(sensex: dict, nifty: dict | None, days: int = 120, test_days: int = 40, progress=None) -> dict:
+    """Try rule combinations. Pick on the first part (train), then check on the last `test_days` (test)."""
+    grid = {"t1_r": [0.75, 1.0, 1.5, 2.0], "t1_exit_frac": [0.5, 1.0], "sl_mult": [0.7, 1.0, 1.5],
+            "max_trades": [1, 2], "time_stop_min": [0, 30], "require_pd_break": [False, True]}
+    keys = list(grid)
+    combos = list(itertools.product(*grid.values()))
+    rows = []
+    split = None
+    for i, vals in enumerate(combos):
+        cfg = dict(zip(keys, vals))
+        cfg["t2_r"] = cfg["t1_r"] + 1.0
+        if progress and i % 8 == 0:
+            progress(f"testing {i + 1}/{len(combos)}")
+        res = run(sensex, nifty, days, cfg, keep_all=True)
+        if not res.get("ok"):
+            return res
+        all_days = res["all_days"]
+        split = all_days[-test_days]
+        tr = _net(res["all_trades"])
+        a = stats([t for t in tr if t["day"] < split])
+        b = stats([t for t in tr if t["day"] >= split])
+        rows.append({"rules": cfg, "train": a, "test": b})
+
+    def good(s, n_min):
+        return s.get("trades", 0) >= n_min and s.get("win_pct", 0) >= 60 and s.get("avg_r", -1) > 0.05
+
+    picked = sorted([r for r in rows if good(r["train"], 30)], key=lambda r: -r["train"]["avg_r"])[:10]
+    for r in picked:
+        r["passed_test"] = good(r["test"], 10) and r["test"]["avg_r"] > 0
+    winner = next((r for r in picked if r["passed_test"]), None)
+    hi_win = max(rows, key=lambda r: (r["train"].get("win_pct", 0), r["train"].get("avg_r", -9)))
+    low_sl_hi_t = next(r for r in rows if r["rules"]["sl_mult"] == 0.7 and r["rules"]["t1_r"] == 2.0
+                       and r["rules"]["t1_exit_frac"] == 1.0 and r["rules"]["max_trades"] == 2
+                       and r["rules"]["time_stop_min"] == 0 and not r["rules"]["require_pd_break"])
+    base = next(r for r in rows if r["rules"]["sl_mult"] == 1.0 and r["rules"]["t1_r"] == 1.5
+                and r["rules"]["t1_exit_frac"] == 0.5 and r["rules"]["max_trades"] == 2
+                and r["rules"]["time_stop_min"] == 30 and not r["rules"]["require_pd_break"])
+    if winner:
+        verdict = ("FOUND", f"Train lo select chesina rule test period (last {test_days} days) lo kuda pass ayyindi: "
+                            f"win {winner['test']['win_pct']}%, avg {winner['test']['avg_r']:+.2f}R (charges taruvata). "
+                            "Paper lo 2 weeks chusi, appude real money.")
+    else:
+        verdict = ("NOT FOUND", "Win rate 60%+ and profit rendu kalipi test period lo pass ayye rule dorakaledu. "
+                                "Ee strategy family lo nijamaina edge ledu - real money pettakandi.")
+    return {"ok": True, "combos": len(combos), "days": days, "test_from": split, "cost_r_per_trade": COST_R,
+            "verdict": {"label": verdict[0], "text": verdict[1]}, "winner": winner, "top": picked,
+            "highest_win_rate": hi_win, "low_sl_high_target": low_sl_hi_t, "current_rules": base,
+            "criteria": "Train: >=30 trades, win >=60%, avg > +0.05R after costs. Test: >=10 trades, win >=60%, avg > 0."}

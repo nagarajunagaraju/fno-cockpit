@@ -210,3 +210,19 @@ def test_live_engine_init_poll_and_contract():
     plan = lv.manager.triggers[0]
     assert plan["sl_premium"] < plan["entry_premium"] < plan["t1_premium"] < plan["t2_premium"]
     assert plan["qty"] == plan["lots"] * 20 and plan["max_loss"] <= cfg["capital"] * cfg["sensex_risk_pct"] / 100 + 1
+
+
+def test_lab_rules_variants():
+    # full exit at T1 + no BE: on the bull day the trade books T1 completely
+    br = Brain(LV, [79900.0] * 60, {"t1_exit_frac": 1.0, "t1_r": 1.0})
+    evs = []
+    for b in path_bars(BULL_DAY):
+        evs += br.on_bar(b, nifty_chg=0.4)
+    ex = [e for e in evs if e["kind"] == "EXIT"]
+    assert ex and ex[0]["why"] == "T1" and ex[0]["result_r"] == 1.0
+    # ninnati high filter: entry ~80240 < pdh 80600 -> skipped
+    br2 = Brain(LV, [79900.0] * 60, {"require_pd_break": True})
+    evs2 = []
+    for b in path_bars(BULL_DAY):
+        evs2 += br2.on_bar(b, nifty_chg=0.4)
+    assert not any(e["kind"] == "SIGNAL" for e in evs2)

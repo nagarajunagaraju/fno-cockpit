@@ -87,7 +87,7 @@ class SensexLive:
         seed = [c["close"] for c in five]
         self._load_chain(kite, today)
         with self.lock:
-            self.brain = Brain(levels, seed)
+            self.brain = Brain(levels, seed, store.kv_get("sensex_rules"))
             self.comm = []
             self.cur = None
             self.day = today.isoformat()

@@ -19,6 +19,11 @@ DEFAULTS = {
     "min_sl_pct": 0.12, "max_sl_pct": 0.45, "t1_r": 1.5, "t2_r": 2.5, "min_room_r": 1.0,
     "max_trades": 2, "stop_after_loss": True, "time_stop_min": 30, "time_stop_r": 0.5,
     "vix_spike_pct": 8.0, "level_near_pct": 0.08,
+    # strategy-lab knobs (defaults = original rules)
+    "t1_exit_frac": 0.5,      # part booked at T1 (1.0 = full exit at T1)
+    "be_after_t1": True,      # move SL to cost after T1
+    "sl_mult": 1.0,           # SL distance multiplier (wider SL)
+    "require_pd_break": False,  # CE only above ninnati high, PE only below ninnati low
 }
 
 
@@ -251,7 +256,13 @@ class Brain:
             return
         if rp < cfg["min_sl_pct"]:
             risk = entry * cfg["min_sl_pct"] / 100
-            sl = entry - risk if up else entry + risk
+        if cfg["sl_mult"] != 1.0:
+            risk *= cfg["sl_mult"]
+        sl = entry - risk if up else entry + risk
+        if cfg["require_pd_break"] and ((up and entry <= self.lv["pdh"]) or (not up and entry >= self.lv["pdl"])):
+            self._ev(bar["t"], "WAIT", f"{'CE' if up else 'PE'} trigger kani ninnati {'high' if up else 'low'} "
+                                       f"{fmt(self.lv['pdh'] if up else self.lv['pdl'])} cross avvaledu. Skip.", False)
+            return
         res, sup = self.nearest(entry)
         block = res if up else sup
         if block and abs(block[1] - entry) < cfg["min_room_r"] * risk:
@@ -274,23 +285,35 @@ class Brain:
             return
         up = tr["side"] == "BULL"
         cfg = self.cfg
+        f = cfg["t1_exit_frac"]
+        rest = 1.0 - f
         hit_sl = b["l"] <= tr["stop"] if up else b["h"] >= tr["stop"]
         if hit_sl:
-            tr["r"] += (0.5 * 0 if tr["half"] else -1.0)
-            self._close(b["t"], "SL" if not tr["half"] else "COST",
-                        f"{'SL hit' if not tr['half'] else 'Cost daggara exit (T1 tarvata)'} at {fmt(tr['stop'])}. "
-                        + ("Ivala inka trades vaddu." if not tr["half"] and cfg["stop_after_loss"] else ""))
-            if not tr["half"]:
+            if tr["half"]:
+                tr["r"] += rest * ((tr["stop"] - tr["entry"]) / tr["risk"] * (1 if up else -1))
+                self._close(b["t"], "COST" if cfg["be_after_t1"] else "SL_AFTER_T1",
+                            f"T1 tarvata migata position exit at {fmt(tr['stop'])}.")
+            else:
+                tr["r"] = -1.0
                 self.losses += 1
+                self._close(b["t"], "SL", f"SL hit at {fmt(tr['stop'])}. "
+                            + ("Ivala inka trades vaddu." if cfg["stop_after_loss"] else ""))
             return
         if not tr["half"] and (b["h"] >= tr["t1"] if up else b["l"] <= tr["t1"]):
-            tr["half"], tr["stop"], tr["r"] = True, tr["entry"], cfg["t1_r"] * 0.5
-            self._ev(b["t"], "T1", f"🎯 T1 {fmt(tr['t1'])} vachindi. Sagam book chey, migata daniki SL cost ({fmt(tr['entry'])}) ki marchu.", True)
+            tr["r"] = cfg["t1_r"] * f
+            if rest <= 1e-9:
+                self._close(b["t"], "T1", f"🎯 T1 {fmt(tr['t1'])} vachindi. Motham book chey.")
+                return
+            tr["half"] = True
+            if cfg["be_after_t1"]:
+                tr["stop"] = tr["entry"]
+            self._ev(b["t"], "T1", f"🎯 T1 {fmt(tr['t1'])} vachindi. {int(f * 100)}% book chey"
+                     + (f", migata daniki SL cost ({fmt(tr['entry'])}) ki marchu." if cfg["be_after_t1"] else "."), True)
         if tr["half"] and (b["h"] >= tr["t2"] if up else b["l"] <= tr["t2"]):
-            tr["r"] += cfg["t2_r"] * 0.5
+            tr["r"] += cfg["t2_r"] * rest
             self._close(b["t"], "T2", f"🎯🎯 T2 {fmt(tr['t2'])} vachindi. Motham book chey.")
             return
-        if not tr["half"] and t - tr["m"] >= cfg["time_stop_min"]:
+        if cfg["time_stop_min"] and not tr["half"] and t - tr["m"] >= cfg["time_stop_min"]:
             move = (b["c"] - tr["entry"]) / tr["risk"] * (1 if up else -1)
             if move < cfg["time_stop_r"]:
                 tr["r"] = move
@@ -300,7 +323,9 @@ class Brain:
                 return
         if t >= hm(cfg["square_off"]):
             move = (b["c"] - tr["entry"]) / tr["risk"] * (1 if up else -1)
-            tr["r"] = (tr["r"] + 0.5 * move) if tr["half"] else move
+            tr["r"] = (tr["r"] + rest * move) if tr["half"] else move
+            if not tr["half"] and move < 0:
+                self.losses += 1
             self._close(b["t"], "SQUARE_OFF", f"15:15 - position close chey at {fmt(b['c'])}.")
 
     def _close(self, t, why, text):

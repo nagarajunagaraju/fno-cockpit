@@ -114,6 +114,7 @@ fun SensexScreen(api: Api, go: (Screen) -> Unit) {
             }
         }
         item { SensexBacktestCard(api) }
+        item { StrategyLabCard(api) }
         item {
             Text("Idi rules based commentary, 100% guarantee kaadu. Prati trade ki SL compulsory. App orders pettadu - Kite lo nuvve pettali.",
                 color = Mut, fontSize = 11.sp)
@@ -156,5 +157,67 @@ fun SensexBacktestCard(api: Api) {
             KV(m.optString("month"), "${m.optInt("trades")} trades · ${n(m.dbl("win_pct"), 0)}% · ${signed(m.dbl("total_r"))}R", col(m.dbl("total_r")))
         }
         Bullets(r.optJSONArray("notes").strs(), color = Mut)
+    }
+}
+
+private fun rulesText(r: JSONObject?): String {
+    if (r == null) return "—"
+    val full = (r.dbl("t1_exit_frac") ?: 0.5) >= 1.0
+    return "SL x${n(r.dbl("sl_mult"), 1)} · target ${n(r.dbl("t1_r"), 2)}R" + (if (full) " full exit" else " half, T2 ${n(r.dbl("t2_r"), 1)}R") +
+        " · ${r.optInt("max_trades")}/day" + (if (r.optInt("time_stop_min") > 0) " · time stop ${r.optInt("time_stop_min")}m" else "") +
+        (if (r.optBoolean("require_pd_break")) " · ninnati H/L break" else "")
+}
+
+@Composable
+private fun LabRow(title: String, row: JSONObject?, highlight: Color = Color.Unspecified) {
+    if (row == null) return
+    val a = row.optJSONObject("train") ?: JSONObject()
+    val b = row.optJSONObject("test") ?: JSONObject()
+    Column(Modifier.padding(vertical = 4.dp)) {
+        Text(title, fontWeight = FontWeight.SemiBold, color = highlight, fontSize = 13.sp)
+        Text(rulesText(row.optJSONObject("rules")), color = Mut, fontSize = 11.sp)
+        KV2("Train win · avg", "${n(a.dbl("win_pct"), 0)}% · ${signed(a.dbl("avg_r"))}R", "Test win · avg", "${n(b.dbl("win_pct"), 0)}% · ${signed(b.dbl("avg_r"))}R",
+            col(a.dbl("avg_r")), col(b.dbl("avg_r")))
+        Text("trades: train ${a.optInt("trades")}, test ${b.optInt("trades")}", color = Mut, fontSize = 11.sp)
+    }
+}
+
+@Composable
+fun StrategyLabCard(api: Api) {
+    val scope = rememberCoroutineScope()
+    var msg by remember { mutableStateOf<String?>(null) }
+    val (d, err) = poll(5000) { api.obj("/api/sensex/lab") }
+    val job = d?.optJSONObject("job")
+    val running = job?.optBoolean("running") == true
+    Card(border = Acc) {
+        Text("Strategy Lab (high win rate + profit)", fontWeight = FontWeight.SemiBold)
+        Text("192 rule combinations: first 80 days lo select, last 40 days lo verify. Charges ~0.07R/trade teesesi.", color = Mut, fontSize = 11.sp)
+        ErrorText(err ?: msg ?: job?.str("error"))
+        Button(enabled = !running, onClick = { scope.launch { msg = try { api.post("/api/sensex/lab", JSONObject()); "Started (2-5 min)" } catch (e: Exception) { e.message } } }) {
+            Text(if (running) "Running: ${job?.optString("stage")}" else "Run Strategy Lab")
+        }
+        Text("Live rules ippudu: " + (d?.optJSONObject("applied_rules")?.let { rulesText(it) } ?: "original"), fontSize = 12.sp)
+        val r = d?.optJSONObject("result") ?: return@Card
+        if (!r.optBoolean("ok")) { Text(r.optString("error"), color = Warn); return@Card }
+        val v = r.optJSONObject("verdict") ?: JSONObject()
+        val found = v.optString("label") == "FOUND"
+        Pill(v.optString("label"), if (found) Up else Dn)
+        Text(v.optString("text"), fontSize = 13.sp)
+        Text("Test period from ${r.optString("test_from")}", color = Mut, fontSize = 11.sp)
+        LabRow("✅ Pass ayina best rule", r.optJSONObject("winner"), Up)
+        LabRow("Ippati rules (original)", r.optJSONObject("current_rules"))
+        LabRow("Low SL + High target", r.optJSONObject("low_sl_high_target"))
+        LabRow("Highest win rate (profit kaadu choodu)", r.optJSONObject("highest_win_rate"), Warn)
+        r.optJSONObject("winner")?.optJSONObject("rules")?.let { w ->
+            Button(onClick = { scope.launch { msg = try { api.post("/api/sensex/rules", JSONObject().put("rules", w)); "Applied - repu morning nunchi live" } catch (e: Exception) { e.message } } }) {
+                Text("Ee rule live lo pettu")
+            }
+        }
+        if (d.optJSONObject("applied_rules") != null) {
+            TextButton(onClick = { scope.launch { msg = try { api.post("/api/sensex/rules", JSONObject().put("rules", JSONObject.NULL)); "Original rules ki marchanu" } catch (e: Exception) { e.message } } }) {
+                Text("Original rules ki marchu")
+            }
+        }
+        Text(r.optString("criteria"), color = Mut, fontSize = 11.sp)
     }
 }
